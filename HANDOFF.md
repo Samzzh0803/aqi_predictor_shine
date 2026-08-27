@@ -6,66 +6,61 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** 6 of 10 - complete. Local-first inference and API path implemented and verified against real, fresh data end to end.
-**Last updated:** 2026-08-27 by Claude
+**Day:** 8 of 10 (partial) - repo connected to GitHub, CI is green; automation and hosting deliberately deferred pending Hopsworks.
+**Last updated:** 2026-08-28 by Claude
 
-**Test status:**
-- `pytest tests/test_predictor.py tests/test_api.py -q` -> `11 passed, 3 warnings in 14.47s`
-- `python -m ruff check src/inference src/api tests/test_predictor.py tests/test_api.py src/models/registry.py` -> `All checks passed!`
+**What happened this session**
+- Connected the local repo to `https://github.com/Samzzh0803/aqi_predictor_shine` (merged with the remote's auto-created `.gitignore`, kept ours - it's the tailored one).
+- Cleaned real junk that was about to get committed: stray `pip install` log files (`0.43`, `3.7`, `6.31.1`), empty root-level `Untitled*.ipynb` scratch notebooks, `.claude/`, `.virtual_documents/`, `anaconda_projects/` local tooling state. None of that is project content.
+- Extended `.gitignore` to cover `data/feature_store/`, `data/metrics/`, `data/model_registry/` - these didn't exist when the original `.gitignore` was written (Hopsworks was going to hold all of that remotely); the local fallback now generates them for real and they were about to get committed.
+- **Found and flagged a real architectural gap before building blindly**: every Day 8 deliverable (CI, hourly/daily automation, hosting) needs storage that persists across separate runs. Hopsworks was always meant to be that. The local Parquet fallback isn't - it only exists on this machine's disk. Confirmed concretely: 37 references across 4 test files load `data/raw/aqi_weather_...parquet` directly, which doesn't exist on a clean GitHub Actions checkout.
+- **Human decision:** ship CI now (fetch a small live sample from Open-Meteo inside the workflow instead of needing the gitignored multi-year cache), defer hourly/daily automation and live hosting until Hopsworks is actually available. Documented as a known, deliberate limitation, not a bug.
+- Built `.github/workflows/ci.yml`: checkout -> setup-python 3.11 -> `ruff check` -> fetch 60 days of real Open-Meteo data into the path tests expect -> `pytest`.
+- **Verified the workflow logic locally before trusting the YAML**: moved the real `data/raw`, `data/feature_store`, `data/metrics`, `data/model_registry` aside to simulate a clean checkout, ran the exact same steps the workflow runs. This caught 2 real test bugs that would have broken CI on the very first run.
+- Fixed both: `test_targets.py::test_build_targets_drops_incomplete_trailing_rows` hardcoded a "-1 hour" offset that only holds for the original dataset's specific leading-NaN shape (CAMS data starts 2022-08-05, fetch started 2022-08-01) - replaced with a dataset-agnostic recomputation of the actual invariant. `test_backfill.py::test_run_backfill_rebuilds_training_data_from_local_store` hardcoded literal `2022-08-01`/`2022-08-10` dates - now derives them from the loaded data, matching the pattern its own sibling tests already used correctly. Verified both fixes pass against the small CI-sized sample AND the full 4-year local dataset (no regression).
+- Made `dashboard/app.py`'s `API_BASE_URL` read from an environment variable (was hardcoded to `localhost:8000`) so a future deployed dashboard can point at a deployed API. No behavior change locally (still defaults to localhost).
+- Fixed pre-existing ruff findings across the repo (`tests/test_data.py`, `src/data/open_meteo.py` - import order, `datetime.UTC` alias) so the new CI lint gate starts green instead of failing on unrelated pre-existing issues.
+- `python -m ruff check src tests dashboard` -> All checks passed. Full local test suite: 58 passed.
 
-**Completed this session**
-- Added `src/inference/predictor.py` with `predict_next_3_days()` using the local fallback registry and local feature store.
-- Added shared AQI helpers in `src/inference/aqi.py` as the single source of truth for category and alert thresholds.
-- Enforced Day 6 inference constraints:
-  - load champion from registry
-  - reconstruct exact registered feature order
-  - reject missing or null features
-  - clip predictions to `[0, 500]`
-  - attach AQI category and alert labels
-  - reject stale features older than 48 hours with a clear error
-- Added `src/api/main.py` FastAPI endpoints for `/health`, `/forecast`, `/model-info`, and `/history`.
-- Extended `src/models/registry.py` so inference can load serialized local model artifacts, including TensorFlow bundles if a future champion is the MLP.
-- Installed missing FastAPI runtime dependencies in the active Python environment so Day 6 API tests run for real.
-- Verified real local smoke behavior on Thursday, August 27, 2026:
-  - `/health` -> `200` with `{"status": "ok"}`
-  - `/forecast` -> `503` with `Latest features are stale: event_time=2026-08-24T23:00:00+00:00 is older than 48 hours`
+**Deliberately NOT done this session, and why**
+- `hourly_features.yml` / `daily_training.yml`: would need to persist the feature store/registry across ephemeral GitHub Actions runs. Without Hopsworks, the only ways to do that are hacky (commit data back to the repo as a snapshot, or rebuild everything from scratch every run). Human chose to wait for Hopsworks rather than build a workaround.
+- Streamlit Community Cloud / Hugging Face Spaces accounts and deployment: same underlying blocker - the API and dashboard both read local files (registry, feature store, SHAP artifacts, day5_summary.json) that don't exist anywhere but this machine. Deploying today would either crash or serve nothing real. Deferred alongside automation.
+- `docker/Dockerfile.api`: drafted, then deleted - it referenced `data/model_registry/` and `data/feature_store/` as COPY sources, which don't exist in a fresh checkout. Revisit once the persistence question is resolved.
 
 **Files changed this session**
-- `src/inference/aqi.py`
-- `src/inference/__init__.py`
-- `src/inference/predictor.py`
-- `src/api/__init__.py`
-- `src/api/main.py`
-- `src/models/registry.py`
-- `tests/test_predictor.py`
-- `tests/test_api.py`
-- `HANDOFF.md`
+- `.gitignore`
+- `.github/workflows/ci.yml` (new)
+- `dashboard/app.py`
+- `src/data/open_meteo.py`
+- `tests/test_backfill.py`
+- `tests/test_data.py`
+- `tests/test_targets.py`
 
 **How to verify**
 ```bash
-pytest tests/test_predictor.py tests/test_api.py -q
-python -m ruff check src/inference src/api tests/test_predictor.py tests/test_api.py src/models/registry.py
-python -c "from fastapi.testclient import TestClient; from src.api.main import app; client = TestClient(app); print(client.get('/health').status_code); print(client.get('/forecast').status_code); print(client.get('/forecast').json())"
+ruff check src tests dashboard
+pytest tests/ -q
 ```
+Check the GitHub Actions tab on the repo to confirm `ci.yml` is green on the real remote runner.
 
 **Current blockers / follow-up**
-1. Hopsworks is still not required for Day 6/7 local development; local registry + local feature store are enough.
-2. Refreshed `data/raw/*.parquet` and the local feature store with real data through `2026-08-27T23:00:00Z` (fetched via `fetch_air_quality_recent`/`fetch_weather_recent`, merged into the existing raw cache, re-ran `backfill.py`). `/forecast` now returns `200` with real predictions on a fresh, unmocked process - verified directly, not just via mocked tests. No hourly automation exists yet (that's Day 8); this was a one-off manual refresh, and features will go stale again after ~48h without it.
-3. `targets` max event_time is legitimately behind `features` max event_time (`2026-08-24` vs `2026-08-27`) - this is correct, not a bug: the most recent ~72h of rows can't have targets yet since day3 needs t+49..t+72h of future data that doesn't exist yet.
+1. Hopsworks account/project status: still not confirmed by the human as of this session. This is now the actual critical-path blocker for the rest of Day 8 (automation + hosting), not just a nice-to-have.
+2. Once Hopsworks is live: swap `src/feature_store/store.py` and `src/models/registry.py` to the real backend behind the same function signatures (per ADR-008/009), then `hourly_features.yml`, `daily_training.yml`, and both hosting deployments become straightforward.
+3. Never watched a real GitHub Actions run execute (no `gh` CLI in this environment) - only verified the workflow's logic locally by simulating a clean checkout.
 
 **Next task**
-- Day 7: Streamlit dashboard. Reuse the same "fail visibly, never silently" pattern the API already has for the stale-features case.
+- Confirm CI is green on GitHub. Then either (a) chase Hopsworks account/cluster status to unblock automation+hosting, or (b) if Hopsworks stays blocked, come back and deliberately choose one of the other two options from this session's decision (full-rebuild-every-run, or commit-data-as-snapshot) to get a real deployed demo for the report before Day 10.
 
-**Gate (Day 6):** MET. `/health` -> 200. `/forecast` -> 200 with three real, correctly-labeled predictions on fresh unmocked data (verified). API fails cleanly (503, no stack trace) when features are stale or the registry is empty.
+**Gate (Day 8, partial):** MET for CI only. `ci.yml` exists, verified locally to pass from a simulated clean checkout. Automation and hosting gates are NOT met - deliberately deferred, not silently skipped.
 
 ---
 
 ## PREVIOUS ENTRIES
 
-### 2026-08-27 - Claude
-- Found and fixed a real Day 2 contract violation: `build_features.py` was still emitting `aqi_lag_1h`, `pm25_lag_1h`, and `aqi_change_1h`, which `PROJECT_CONTRACT.md` section 4 explicitly excludes.
-- Rebuilt downstream local artifacts and re-verified that `ridge` remained the Day 5 champion on the corrected 46-feature set.
+### 2026-08-27 - Codex + Claude (Day 7)
+- Built the Streamlit dashboard (`dashboard/app.py`): header, alert banner, KPI cards, forecast chart, model-quality card, SHAP view, footer.
+- Claude caught a real gap: Row 3 (current PM2.5/PM10/O3/NO2/humidity/wind) was missing, and `show_spinner=False` suppressed the required loading state. Codex fixed both. Verified live against a running FastAPI server (not just mocked tests) - real current-conditions values and full `main()` render confirmed working end to end.
 
-### 2026-08-26 - Codex
-- Implemented `src/pipelines/train.py` for Day 4 with chronological splits, baselines, Ridge, RandomForest, HistGradientBoosting, and comparison table persistence.
-- Implemented Day 3 local Parquet feature-store fallback in `src/feature_store/store.py` and `src/pipelines/backfill.py`.
+### 2026-08-27 - Codex (Day 6)
+- Implemented `src/inference/predictor.py::predict_next_3_days()`, `src/inference/aqi.py` (category/alert single source of truth), `src/api/main.py` (`/health`, `/forecast`, `/model-info`, `/history`).
+- Claude verified live against the real registry and refreshed stale local features (fetched fresh Open-Meteo data, re-ran backfill) so `/forecast` returns real `200` predictions, not just a `503`.
