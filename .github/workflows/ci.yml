@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check src tests dashboard
+
+      - name: Fetch a small real data sample for tests
+        run: |
+          python -c "
+          from pathlib import Path
+          from src.data.open_meteo import (
+              fetch_air_quality_recent,
+              fetch_weather_recent,
+              load_city_config,
+              merge_air_quality_and_weather,
+          )
+
+          city = load_city_config()
+          air_quality = fetch_air_quality_recent(days=60, city=city)
+          weather = fetch_weather_recent(days=60, city=city)
+          merged = merge_air_quality_and_weather(air_quality, weather)
+
+          Path('data/raw').mkdir(parents=True, exist_ok=True)
+          merged.to_parquet('data/raw/aqi_weather_2022-08-01_2026-08-24.parquet', index=False)
+          print(f'CI test fixture rows: {len(merged)}')
+          "
+
+      - name: Test
+        run: pytest tests/ -q

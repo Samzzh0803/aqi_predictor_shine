@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from src.data.open_meteo import OpenMeteoClientError
 from src.feature_store import load_features
 from src.inference.aqi import aqi_category
 
-DEFAULT_API_BASE_URL = "http://localhost:8000"
+DEFAULT_API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 DEFAULT_TIMEOUT_SECONDS = 15
 SHAP_DIR = Path("data") / "metrics" / "shap"
 DAY5_SUMMARY_PATH = Path("data") / "metrics" / "day5_summary.json"

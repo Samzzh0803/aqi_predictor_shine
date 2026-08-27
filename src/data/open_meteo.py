@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
 import yaml
+from pandas import DatetimeTZDtype
 from requests import Response
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-from pandas import DatetimeTZDtype
 
 LOGGER = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ def fetch_weather(
 def fetch_air_quality_recent(days: int = 7, city: CityConfig | None = None) -> pd.DataFrame:
     """Fetch recent air-quality history using the forecast-compatible endpoint."""
 
-    end = datetime.now(timezone.utc).date()
+    end = datetime.now(UTC).date()
     start = end - pd.Timedelta(days=days - 1)
     return fetch_air_quality(start=start, end=end, city=city)
 
@@ -216,7 +216,7 @@ def fetch_air_quality_recent(days: int = 7, city: CityConfig | None = None) -> p
 def fetch_weather_recent(days: int = 7, city: CityConfig | None = None) -> pd.DataFrame:
     """Fetch recent weather history from the forecast endpoint."""
 
-    end = datetime.now(timezone.utc).date()
+    end = datetime.now(UTC).date()
     start = end - pd.Timedelta(days=days - 1)
     return fetch_weather(start=start, end=end, city=city)
 

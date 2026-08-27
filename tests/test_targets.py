@@ -24,8 +24,14 @@ def test_build_targets_drops_incomplete_trailing_rows() -> None:
     targets = build_targets(frame)
 
     assert targets["event_time"].max() == frame["event_time"].iloc[-73]
-    expected_first_valid = frame.loc[frame["us_aqi"].notna(), "event_time"].min()
-    assert targets["event_time"].min() == expected_first_valid - pd.Timedelta(hours=1)
+
+    us_aqi = frame["us_aqi"].reset_index(drop=True)
+    first_fully_covered_index = next(
+        index
+        for index in range(len(us_aqi) - 72)
+        if us_aqi.iloc[index + 1 : index + 73].notna().all()
+    )
+    assert targets["event_time"].min() == frame["event_time"].iloc[first_fully_covered_index]
 
 
 def test_feature_target_leakage_guards_hold() -> None:

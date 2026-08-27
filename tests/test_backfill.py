@@ -141,8 +141,8 @@ def test_run_backfill_rebuilds_training_data_from_local_store(
     raw_cache_path = tmp_path / "raw_cache.parquet"
 
     artifacts = run_backfill(
-        start_date="2022-08-01",
-        end_date="2022-08-10",
+        start_date=raw["event_time"].min().date().isoformat(),
+        end_date=raw["event_time"].max().date().isoformat(),
         source_frame=raw,
         raw_cache_path=raw_cache_path,
     )
