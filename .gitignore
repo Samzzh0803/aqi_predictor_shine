@@ -50,6 +50,9 @@ models/
 *.h5
 *.keras
 
+# Streamlit
+.streamlit/secrets.toml
+
 # OS
 .DS_Store
 Thumbs.db
