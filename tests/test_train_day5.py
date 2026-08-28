@@ -11,8 +11,7 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.models.registry import get_champion as get_registry_champion
-from src.models.registry import register_model_version as real_register_model_version
+from src.models import registry as registry_module
 from src.pipelines.train import (
     ModelRunResult,
     RollingValidationArtifacts,
@@ -24,6 +23,7 @@ from src.pipelines.train import (
     run_day5_pipeline,
     select_champion_name,
 )
+from tests.test_registry import FakeModelRegistry
 
 
 def test_get_top_two_model_names_uses_validation_metric() -> None:
@@ -314,14 +314,10 @@ def _run_day5_pipeline_for_champion(
         "src.pipelines.train.generate_shap_artifacts",
         lambda model_result, source_frame, feature_columns, output_dir=Path("unused"): {"summary": str(tmp_path / "champion.png")},
     )
-    monkeypatch.setattr(
-        "src.pipelines.train.register_model_version",
-        lambda **kwargs: real_register_model_version(**kwargs, registry_root=tmp_path / "registry"),
-    )
-    monkeypatch.setattr(
-        "src.pipelines.train.get_champion",
-        lambda model_name="pearls_aqi_forecaster": get_registry_champion(model_name, registry_root=tmp_path / "registry"),
-    )
+    fake_registry = FakeModelRegistry()
+    monkeypatch.setattr(registry_module, "_get_model_registry", lambda: fake_registry)
+    monkeypatch.setattr("src.pipelines.train.register_model_version", registry_module.register_model_version)
+    monkeypatch.setattr("src.pipelines.train.get_champion", registry_module.get_champion)
 
     return run_day5_pipeline(register_in_local_registry=True)
 
