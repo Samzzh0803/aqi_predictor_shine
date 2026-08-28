@@ -201,3 +201,63 @@ def test_day3_gate_rebuilds_training_set_from_feature_store_parquet_alone(
     )
 
     pd.testing.assert_frame_equal(rebuilt_training_set, expected_training_set)
+
+
+def test_run_backfill_rejects_all_null_weather_column(
+    local_store_paths: dict[str, Path],
+) -> None:
+    raw = _load_raw_frame().iloc[96:240].reset_index(drop=True)
+    raw["wind_speed_10m"] = pd.NA
+
+    with pytest.raises(OpenMeteoClientError, match="all-null columns: wind_speed_10m"):
+        run_backfill(
+            start_date=raw["event_time"].min().date().isoformat(),
+            end_date=raw["event_time"].max().date().isoformat(),
+            source_frame=raw,
+        )
+
+
+def test_run_backfill_rejects_all_null_aqi_column(
+    local_store_paths: dict[str, Path],
+) -> None:
+    raw = _load_raw_frame().iloc[96:240].reset_index(drop=True)
+    raw["us_aqi"] = pd.NA
+
+    with pytest.raises(OpenMeteoClientError, match="all-null columns: us_aqi"):
+        run_backfill(
+            start_date=raw["event_time"].min().date().isoformat(),
+            end_date=raw["event_time"].max().date().isoformat(),
+            source_frame=raw,
+        )
+
+
+def test_run_backfill_wraps_air_quality_fetch_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.pipelines.backfill.fetch_air_quality",
+        lambda start, end, city: (_ for _ in ()).throw(OpenMeteoClientError("timeout during AQI fetch")),
+    )
+    monkeypatch.setattr(
+        "src.pipelines.backfill.fetch_weather",
+        lambda start, end, city: pd.DataFrame(),
+    )
+
+    with pytest.raises(OpenMeteoClientError, match="Backfill failed while fetching air quality"):
+        run_backfill("2026-08-20", "2026-08-21")
+
+
+def test_run_backfill_wraps_weather_fetch_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.pipelines.backfill.fetch_air_quality",
+        lambda start, end, city: pd.DataFrame({"city_id": [], "latitude": [], "longitude": [], "event_time": []}),
+    )
+    monkeypatch.setattr(
+        "src.pipelines.backfill.fetch_weather",
+        lambda start, end, city: (_ for _ in ()).throw(OpenMeteoClientError("timeout during weather fetch")),
+    )
+
+    with pytest.raises(OpenMeteoClientError, match="Backfill failed while fetching weather"):
+        run_backfill("2026-08-20", "2026-08-21")

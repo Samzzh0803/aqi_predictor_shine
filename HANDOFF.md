@@ -6,52 +6,59 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** 8 of 10 (partial) - repo connected to GitHub, CI is green; automation and hosting deliberately deferred pending Hopsworks.
-**Last updated:** 2026-08-28 by Claude
+**Day:** 9 of 10 (partial) - Day 8 remains partially blocked on Hopsworks; Day 9 hardening and decision-support work progressed locally.
+**Last updated:** 2026-08-28 by Codex
 
 **What happened this session**
-- Connected the local repo to `https://github.com/Samzzh0803/aqi_predictor_shine` (merged with the remote's auto-created `.gitignore`, kept ours - it's the tailored one).
-- Cleaned real junk that was about to get committed: stray `pip install` log files (`0.43`, `3.7`, `6.31.1`), empty root-level `Untitled*.ipynb` scratch notebooks, `.claude/`, `.virtual_documents/`, `anaconda_projects/` local tooling state. None of that is project content.
-- Extended `.gitignore` to cover `data/feature_store/`, `data/metrics/`, `data/model_registry/` - these didn't exist when the original `.gitignore` was written (Hopsworks was going to hold all of that remotely); the local fallback now generates them for real and they were about to get committed.
-- **Found and flagged a real architectural gap before building blindly**: every Day 8 deliverable (CI, hourly/daily automation, hosting) needs storage that persists across separate runs. Hopsworks was always meant to be that. The local Parquet fallback isn't - it only exists on this machine's disk. Confirmed concretely: 37 references across 4 test files load `data/raw/aqi_weather_...parquet` directly, which doesn't exist on a clean GitHub Actions checkout.
-- **Human decision:** ship CI now (fetch a small live sample from Open-Meteo inside the workflow instead of needing the gitignored multi-year cache), defer hourly/daily automation and live hosting until Hopsworks is actually available. Documented as a known, deliberate limitation, not a bug.
-- Built `.github/workflows/ci.yml`: checkout -> setup-python 3.11 -> `ruff check` -> fetch 60 days of real Open-Meteo data into the path tests expect -> `pytest`.
-- **Verified the workflow logic locally before trusting the YAML**: moved the real `data/raw`, `data/feature_store`, `data/metrics`, `data/model_registry` aside to simulate a clean checkout, ran the exact same steps the workflow runs. This caught 2 real test bugs that would have broken CI on the very first run.
-- Fixed both: `test_targets.py::test_build_targets_drops_incomplete_trailing_rows` hardcoded a "-1 hour" offset that only holds for the original dataset's specific leading-NaN shape (CAMS data starts 2022-08-05, fetch started 2022-08-01) - replaced with a dataset-agnostic recomputation of the actual invariant. `test_backfill.py::test_run_backfill_rebuilds_training_data_from_local_store` hardcoded literal `2022-08-01`/`2022-08-10` dates - now derives them from the loaded data, matching the pattern its own sibling tests already used correctly. Verified both fixes pass against the small CI-sized sample AND the full 4-year local dataset (no regression).
-- Made `dashboard/app.py`'s `API_BASE_URL` read from an environment variable (was hardcoded to `localhost:8000`) so a future deployed dashboard can point at a deployed API. No behavior change locally (still defaults to localhost).
-- Fixed pre-existing ruff findings across the repo (`tests/test_data.py`, `src/data/open_meteo.py` - import order, `datetime.UTC` alias) so the new CI lint gate starts green instead of failing on unrelated pre-existing issues.
-- `python -m ruff check src tests dashboard` -> All checks passed. Full local test suite: 58 passed.
+- Kept the Day 8 decision intact: no fake persistence workaround, no premature hosting/automation work without Hopsworks.
+- Hardened `src/pipelines/backfill.py` against adversarial raw-input failures before feature engineering begins.
+- Added `validate_backfill_source_frame()` to reject unusable all-null critical source columns with clear messages.
+- Wrapped Open-Meteo fetch failures inside backfill with stage-specific context:
+  - `Backfill failed while fetching air quality: ...`
+  - `Backfill failed while fetching weather: ...`
+- Added Day 9 adversarial tests for:
+  - all-null `us_aqi`
+  - all-null weather signal column
+  - mid-backfill AQI fetch failure
+  - mid-backfill weather fetch failure
+  - API `/history` behavior when feature-store reads fail
+- Re-ran the hardening slice successfully:
+  - `pytest tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q` -> `32 passed, 3 warnings in 52.40s`
+  - `python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py` -> `All checks passed!`
+- Added `docs/operational_decision_support.md` with the required `DATA -> FORECAST -> RISK -> ACTION` framing, sector-by-sector decision matrix, and a worked `Day +2 AQI = 165` example.
+- Added a lightweight regression check for the decision-support doc:
+  - `pytest tests/test_operational_decision_support.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q` -> `34 passed, 3 warnings in 36.27s`
+  - `python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py tests/test_operational_decision_support.py` -> `All checks passed!`
+- Claude independently re-ran the **full** suite (not just the touched-file slice) and cross-checked the decision-support doc's AQI bands against `PROJECT_CONTRACT.md` section 6: `pytest tests/ -q` -> **65 passed** (up from 58), bands match exactly. Not yet pushed to GitHub - do that next, then check the Actions tab.
 
 **Deliberately NOT done this session, and why**
-- `hourly_features.yml` / `daily_training.yml`: would need to persist the feature store/registry across ephemeral GitHub Actions runs. Without Hopsworks, the only ways to do that are hacky (commit data back to the repo as a snapshot, or rebuild everything from scratch every run). Human chose to wait for Hopsworks rather than build a workaround.
-- Streamlit Community Cloud / Hugging Face Spaces accounts and deployment: same underlying blocker - the API and dashboard both read local files (registry, feature store, SHAP artifacts, day5_summary.json) that don't exist anywhere but this machine. Deploying today would either crash or serve nothing real. Deferred alongside automation.
-- `docker/Dockerfile.api`: drafted, then deleted - it referenced `data/model_registry/` and `data/feature_store/` as COPY sources, which don't exist in a fresh checkout. Revisit once the persistence question is resolved.
+- Did not start Hopsworks-dependent automation or hosting, because that blocker has not changed.
+- Did not add workaround persistence layers, because the human explicitly chose to wait for Hopsworks rather than commit snapshots or rebuild everything every run.
+- Did not claim Day 9 complete yet: this session covered additional adversarial paths plus the operational decision-support write-up locally, but not the full workflow rehearsal.
 
 **Files changed this session**
-- `.gitignore`
-- `.github/workflows/ci.yml` (new)
-- `dashboard/app.py`
-- `src/data/open_meteo.py`
+- `src/pipelines/backfill.py`
 - `tests/test_backfill.py`
-- `tests/test_data.py`
-- `tests/test_targets.py`
+- `tests/test_api.py`
+- `docs/operational_decision_support.md`
+- `tests/test_operational_decision_support.py`
 
 **How to verify**
 ```bash
-ruff check src tests dashboard
-pytest tests/ -q
+pytest tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q
+python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py
+pytest tests/test_operational_decision_support.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q
 ```
-Check the GitHub Actions tab on the repo to confirm `ci.yml` is green on the real remote runner.
 
 **Current blockers / follow-up**
-1. Hopsworks account/project status: still not confirmed by the human as of this session. This is now the actual critical-path blocker for the rest of Day 8 (automation + hosting), not just a nice-to-have.
-2. Once Hopsworks is live: swap `src/feature_store/store.py` and `src/models/registry.py` to the real backend behind the same function signatures (per ADR-008/009), then `hourly_features.yml`, `daily_training.yml`, and both hosting deployments become straightforward.
-3. Never watched a real GitHub Actions run execute (no `gh` CLI in this environment) - only verified the workflow's logic locally by simulating a clean checkout.
+1. Hopsworks account/project status is still the real blocker for the deferred Day 8 automation + hosting path.
+2. Day 9 still has remaining non-Hopsworks work available: more adversarial coverage if needed and workflow rehearsal notes.
+3. The test warnings are still the same harmless scikit-learn feature-name warnings from mocked Ridge artifacts in `tests/test_predictor.py`.
 
 **Next task**
-- Confirm CI is green on GitHub. Then either (a) chase Hopsworks account/cluster status to unblock automation+hosting, or (b) if Hopsworks stays blocked, come back and deliberately choose one of the other two options from this session's decision (full-rebuild-every-run, or commit-data-as-snapshot) to get a real deployed demo for the report before Day 10.
+- Continue Day 9 with any remaining local adversarial gaps and workflow-rehearsal/report prep that do not depend on Hopsworks.
 
-**Gate (Day 8, partial):** MET for CI only. `ci.yml` exists, verified locally to pass from a simulated clean checkout. Automation and hosting gates are NOT met - deliberately deferred, not silently skipped.
+**Gate (Day 9, partial):** additional adversarial paths now fail loudly with clear messages, and the operational decision-support layer is documented as a project artifact.
 
 ---
 

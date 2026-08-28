@@ -79,6 +79,25 @@ def run_backfill(
     )
 
 
+def validate_backfill_source_frame(frame: pd.DataFrame) -> None:
+    """Reject unusable raw backfill inputs before feature engineering begins."""
+
+    critical_columns = {
+        "us_aqi": "AQI signal",
+        "temperature_2m": "weather signal",
+        "relative_humidity_2m": "weather signal",
+        "wind_speed_10m": "weather signal",
+    }
+    all_null_columns = [
+        column for column in critical_columns if column in frame.columns and frame[column].isna().all()
+    ]
+    if all_null_columns:
+        raise OpenMeteoClientError(
+            "Backfill source frame contains unusable all-null columns: "
+            + ", ".join(sorted(all_null_columns))
+        )
+
+
 def _load_or_fetch_raw_frame(
     start_date: str,
     end_date: str,
@@ -96,8 +115,14 @@ def _load_or_fetch_raw_frame(
         frame = pd.read_parquet(raw_cache_path)
     else:
         city = load_city_config()
-        air_quality = fetch_air_quality(start=start_date, end=end_date, city=city)
-        weather = fetch_weather(start=start_date, end=end_date, city=city)
+        try:
+            air_quality = fetch_air_quality(start=start_date, end=end_date, city=city)
+        except OpenMeteoClientError as exc:
+            raise OpenMeteoClientError(f"Backfill failed while fetching air quality: {exc}") from exc
+        try:
+            weather = fetch_weather(start=start_date, end=end_date, city=city)
+        except OpenMeteoClientError as exc:
+            raise OpenMeteoClientError(f"Backfill failed while fetching weather: {exc}") from exc
         frame = merge_air_quality_and_weather(air_quality, weather)
 
         if raw_cache_path is not None:
@@ -110,6 +135,7 @@ def _load_or_fetch_raw_frame(
         raise OpenMeteoClientError(
             f"Backfill source frame is empty for requested range {start_date} to {end_date}"
         )
+    validate_backfill_source_frame(frame)
     return frame
 
 

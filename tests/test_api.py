@@ -132,3 +132,18 @@ def test_model_info_endpoint_returns_503_when_registry_empty(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "No registered models found"
+
+
+def test_history_endpoint_returns_503_when_feature_store_read_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.api.main.load_features",
+        lambda: (_ for _ in ()).throw(OpenMeteoClientError("duplicate keys in feature store")),
+    )
+
+    response = client.get("/history")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "duplicate keys in feature store"
