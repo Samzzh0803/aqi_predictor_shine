@@ -84,6 +84,10 @@ def test_predict_next_3_days_loads_local_champion_and_clips_predictions(
     monkeypatch.setattr("src.inference.predictor.get_champion", lambda: champion)
     monkeypatch.setattr("src.inference.predictor.load_features", lambda: latest_features)
     monkeypatch.setattr("src.inference.predictor._configured_city_name", lambda: "Lahore")
+    monkeypatch.setattr(
+        "src.inference.predictor.load_registered_models",
+        lambda version: {name: joblib.load(path) for name, path in version.artifact_paths.items()},
+    )
 
     prediction = predict_next_3_days()
 

@@ -18,6 +18,7 @@ from src.data.open_meteo import OpenMeteoClientError
 
 MODEL_NAME = "pearls_aqi_forecaster"
 CERT_FOLDER = str(Path("data") / ".hopsworks_certs")
+_MANIFEST_FILENAME = "extra_manifest.json"
 
 _model_registry_cache: Any = None
 
@@ -74,11 +75,15 @@ def register_model_version(
             "data_end": data_end,
             "artifact_filenames": artifact_filenames,
         }
+        # Hopsworks' `description` column has a short length limit that the full
+        # metadata (feature list + artifact filenames) can exceed. Ship the full
+        # metadata as a small uploaded file instead, and keep `description` tiny.
+        (version_dir / _MANIFEST_FILENAME).write_text(json.dumps(extra_metadata), encoding="utf-8")
 
         hw_model = mr.python.create_model(
             name=model_name,
             metrics=numeric_metrics,
-            description=json.dumps(extra_metadata),
+            description=f"model_type={model_type}",
         )
         hw_model.save(str(version_dir))
 
@@ -123,7 +128,7 @@ def list_registered_versions(model_name: str = MODEL_NAME) -> list[RegisteredMod
 
     versions: list[RegisteredModelVersion] = []
     for hw_model in hw_models:
-        extra_metadata = json.loads(hw_model.description or "{}")
+        extra_metadata = _load_manifest(hw_model)
         versions.append(
             RegisteredModelVersion(
                 model_name=model_name,
@@ -138,6 +143,14 @@ def list_registered_versions(model_name: str = MODEL_NAME) -> list[RegisteredMod
             )
         )
     return versions
+
+
+def _load_manifest(hw_model: Any) -> dict[str, Any]:
+    download_dir = Path(hw_model.download())
+    manifest_path = download_dir / _MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return {}
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
 def load_registered_models(version: RegisteredModelVersion) -> dict[str, Any]:
