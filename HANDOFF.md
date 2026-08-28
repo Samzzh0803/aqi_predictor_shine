@@ -6,57 +6,48 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** 9 of 10 - Hopsworks is live. Model Registry swapped in for real; feature store is still the local fallback.
-**Last updated:** 2026-08-28 by Claude
+**Day:** 10 of 10 - report, README, and demo script written. Project is MVP-complete with two honestly-documented gaps (feature store, hosting).
+**Last updated:** 2026-08-29 by Claude
 
-**What happened this session (the big one)**
-- Hopsworks is no longer blocked. The "clustering problem" from earlier days was never real - it was two client-side bugs plus two API-key scope gaps, all fixed:
-  1. `hopsworks.login()` defaults to a Unix `/tmp/...` cert path that doesn't exist on Windows - fixed with `cert_folder="data/.hopsworks_certs"`.
-  2. The installed `hopsworks` 5.0.6 package has a real bug in its own free-tier SERVING-scope error handling (`e.response.error_code` should be `e.response.status_code`) - patched around it in `_get_model_registry()`.
-  3. The API key needed `DATASET_CREATE` (to create the "Models" dataset Hopsworks' Model Registry requires) and `MODELREGISTRY` scopes - human regenerated the key with broader scopes.
-  4. `mr.python.create_model(...).save()` failed because Hopsworks' `description` column has a length limit our full JSON metadata (46 features + 12 artifact filenames) exceeded - fixed by moving that metadata into a small `extra_manifest.json` file uploaded alongside the model instead of cramming it into `description`.
-- **Found and fixed a critical, previously-invisible bug**: `.gitignore` had a bare `models/` pattern meant to exclude a top-level model-artifacts folder, but it matched *any* directory named "models" anywhere in the tree - including `src/models/`. The entire model registry module had never been pushed to GitHub since the repo was connected on Day 8, despite being imported by `train.py`, `predictor.py`, and `api/main.py`. This is almost certainly why every CI run failed. Fixed the pattern (`/models/`, anchored to root) and pushed the missing module.
-- Also caught a real API key sitting in `.env.example` (the committed template, not `.env`) - checked git history, confirmed it was never actually committed or pushed, reverted locally. No rotation needed.
-- **Swapped `src/models/registry.py` from the local Parquet fallback to real Hopsworks Model Registry** (`register_model_version`, `get_champion`, `list_registered_versions`, `load_registered_models` - same signatures, zero changes needed in `train.py`/`predictor.py`/`api/main.py`). Feature store (`src/feature_store/store.py`) is intentionally **not** swapped yet - human chose the "registry only" minimal swap to keep Day 9/10 timeline safe.
-- Rewrote `tests/test_registry.py` and the champion-selection tests in `tests/test_train_day5.py` to use an in-memory fake Hopsworks client (`FakeModelRegistry`) instead of live credentials, so the test suite runs offline and in CI without needing `HOPSWORKS_API_KEY`.
-- **Verified for real, not just mocks**: ran the full unmocked Day 5 pipeline against live Hopsworks. Champion is registered at `https://eu-west.cloud.hopsworks.ai:443/p/41216/models/pearls_aqi_forecaster/1` (ridge, mae_mean 16.83, selection_mae_mean 18.07, 46 features, all 3 model files + 9 SHAP artifacts attached). Confirmed `get_champion()`, `load_registered_models()`, and `predict_next_3_days()` all work correctly reading it back from Hopsworks.
-- Full suite: 67 passed. `ruff check src tests dashboard`: clean.
+**What happened this session**
+- Wrote `README.md` (didn't exist before): what it does, architecture, install, env vars, how to run every pipeline, deployment status, known limitations, data attribution.
+- Wrote `docs/REPORT.md`: the full 23-section report from `TASKS.md`, built entirely from real, verified numbers - the Day 4/5 comparison table, the rolling-validation table, real SHAP feature rankings, real dataset row counts, the real Hopsworks Model Registry URL. No placeholder numbers anywhere.
+- Wrote `docs/DEMO.md`: a 9-beat, <10-minute demo script, honest about what's live (Model Registry, CI, dashboard, API) vs. deferred (feature store swap, automation, public hosting) - includes a "what to say if it breaks live" section.
+- Added `ADR-010` to `DECISIONS.md`, formally recording the Hopsworks Model Registry swap, the four SDK/scope bugs that had to be fixed to get there, and the reasoning for *not* swapping the feature store in the same cycle.
+- Verified: full suite still 67 passed after all doc changes (no code touched this session).
 
 **Files changed this session**
-- `.gitignore` (critical fix: `models/` -> `/models/`)
-- `src/models/registry.py` (rewritten for Hopsworks; now actually tracked in git for the first time)
-- `src/models/__init__.py` (now actually tracked in git for the first time)
-- `tests/test_registry.py` (rewritten with `FakeModelRegistry`)
-- `tests/test_train_day5.py` (champion-selection tests use the fake registry)
-- `tests/test_predictor.py` (one test now mocks `load_registered_models` directly - it tests predictor logic, not the registry backend)
-- `.env.example` (reverted an accidentally-real key back to placeholder; never actually pushed)
+- `README.md` (new)
+- `docs/REPORT.md` (new)
+- `docs/DEMO.md` (new)
+- `DECISIONS.md` (ADR-010 added)
+- `HANDOFF.md`
 
 **How to verify**
 ```bash
 pytest tests/ -q
 ruff check src tests dashboard
-python -c "from src.inference.predictor import predict_next_3_days; r = predict_next_3_days(); print(r.model_version, r.model_type); [print(p) for p in r.forecast]"
 ```
-Also: check the GitHub Actions tab - a new CI run should be green now that `src/models/` actually exists in the repo.
+Read `docs/REPORT.md` end to end - every number in it should trace back to a file in `data/metrics/` or a command run during this project, not to something invented for the report.
 
 **Current blockers / follow-up**
-1. Feature store is still local-only (`data/feature_store/`, gitignored, this machine only). Swapping it to real Hopsworks Feature Store was explicitly deferred - only the registry was in scope this session.
-2. `HOPSWORKS_API_KEY`/`HOPSWORKS_PROJECT` need to be set (real values, not placeholders) wherever this code runs next - they're in the local `.env` now, but **not** set as GitHub Actions secrets yet, so any CI/automation step that touches the registry (none currently do - tests use the fake) would need that added first.
-3. `_get_model_registry()`'s login-workaround (the two SDK bug patches) lives inline in `registry.py`. If `hopsworks` gets upgraded and fixes these bugs upstream, the patches are harmless no-ops, but worth knowing they're there.
+1. Feature store is still local-only (`ADR-008`) - the single biggest remaining gap between this system and the frozen contract's full objective.
+2. No hourly/daily automation, no public hosting - both documented honestly in `README.md` §Known limitations and `docs/REPORT.md` §13, §15, §18, §19, not silently glossed over.
+3. Everything else in the MVP scope (`PROJECT_CONTRACT.md` §7) is done: backfill, EDA, feature engineering, Ridge/RF/HGB/MLP, persistence baseline, metrics table, live Model Registry, 3-day prediction, FastAPI, Streamlit, SHAP, alerts, CI.
 
 **Next task**
-- Confirm the new CI run is green on GitHub (this was the actual fix for the failures, not a network/Ubuntu issue as first suspected).
-- Day 10 prep: report + demo. The report can now honestly show a *real* registered Hopsworks Model Registry entry with a live URL, not just local artifacts.
+- If more time exists: the feature-store swap (§13, §22 of `docs/REPORT.md`) is the highest-leverage next increment - it directly unblocks automation and hosting, the only two things left.
+- Otherwise: this is submittable as-is. Run through `docs/DEMO.md` once end to end before presenting.
 
-**Gate (Day 9):** MET. Adversarial hardening, decision-support doc, and a genuinely live Hopsworks Model Registry integration are all done and verified - the last one by running the real, unmocked pipeline against the real service, not by trusting a report.
+**Gate (Day 10):** MET. Report, README, and demo script exist, are grounded in real verified numbers, and honestly state what's built vs. deferred rather than implying completeness that isn't there.
 
 ---
 
 ## PREVIOUS ENTRIES
 
-### 2026-08-28 - Codex (Day 9, earlier this session)
-- Hardened `src/pipelines/backfill.py` with `validate_backfill_source_frame()` (rejects all-null critical columns) and stage-specific fetch-failure wrapping.
-- Wrote `docs/operational_decision_support.md` (DATA -> FORECAST -> RISK -> ACTION framing, 6 categories, worked example) - the Day 9 consulting-layer deliverable.
+### 2026-08-28 - Claude (Day 9, Hopsworks live)
+- Diagnosed and fixed four real Hopsworks SDK/scope issues (Windows cert path, a genuine SDK bug in free-tier error handling, two missing API-key scopes, a `description` length limit) to get the Model Registry genuinely working - verified with a real, unmocked pipeline run and a real registered champion.
+- Found and fixed a critical `.gitignore` bug (`models/` matching `src/models/`) that had silently excluded the entire registry module from every GitHub push since Day 8, and a missing `tests/__init__.py` that caused CI to fail on Ubuntu (found via the actual GitHub Actions API logs, not guessing).
 
-### 2026-08-27 - Codex + Claude (Day 7)
-- Built the Streamlit dashboard. Claude caught a missing Row 3 (current pollutant/weather values) and a suppressed loading state; both fixed and verified live against a running FastAPI server.
+### 2026-08-28 - Codex (Day 9, adversarial hardening)
+- Hardened `src/pipelines/backfill.py` against all-null critical columns and mid-fetch failures; wrote `docs/operational_decision_support.md`.

@@ -130,7 +130,34 @@ The system remains architecturally serverless - stateless compute, managed sched
 
 ---
 
-## ADR-010 - [template]
+## ADR-010 - Hopsworks Model Registry swapped in for real; feature store stays local
+
+**Status:** Accepted on 2026-08-28.
+
+**Context.** Hopsworks had been unreachable since Day 3 (reported as a "clustering problem"). It turned out to be four fixable client-side issues, not a platform outage:
+
+1. `hopsworks.login()` defaults to a Unix `/tmp/...` cert path that doesn't exist on Windows.
+2. The installed `hopsworks` 5.0.6 package has a real bug in its own free-tier SERVING-scope error handling (`e.response.error_code` should be `e.response.status_code`), causing a crash instead of a graceful skip.
+3. The API key's initial scopes lacked `DATASET_CREATE` (needed to create the "Models" dataset Model Registry requires) and `MODELREGISTRY`.
+4. `mr.python.create_model(...).save()` failed because Hopsworks' `description` column has a length limit our full JSON metadata (46-item feature list + 12 artifact filenames) exceeded.
+
+All four are worked around or fixed in `src/models/registry.py::_get_model_registry()` (issues 1-2) and by regenerating the API key with broader scopes (issue 3) and moving metadata into an uploaded `extra_manifest.json` file instead of `description` (issue 4).
+
+**Decision.** Swap `src/models/registry.py` to the real Hopsworks Model Registry now that it demonstrably works — verified with a real, unmocked pipeline run, not just a login test. Do **not** swap `src/feature_store/store.py` in the same cycle; keep it on the Day 3 local-Parquet fallback (`ADR-008`).
+
+**Why not swap the feature store too.** Time budget: Day 9 was nearly complete and Day 10 (report + demo) was next. The registry swap alone gives the report genuine "live Hopsworks Model Registry" evidence (a real URL, a real registered version) without the larger, riskier feature-store migration and its knock-on need for `hourly_features.yml`/`daily_training.yml` to persist state across ephemeral GitHub Actions runs — a problem the feature-store swap would also need to solve, since Hopsworks' Feature Store is exactly the piece designed to make that possible.
+
+**Consequence.** `register_model_version`, `get_champion`, `list_registered_versions`, `load_registered_models` keep their exact function signatures, so `train.py`, `predictor.py`, and `api/main.py` needed zero changes. `tests/test_registry.py` and the champion-selection tests in `tests/test_train_day5.py` now use an in-memory fake Hopsworks client (`FakeModelRegistry`) instead of a local `registry_root`, so the suite runs offline with no credentials.
+
+**Also fixed this cycle, recorded here since they're real architecture-adjacent bugs, not typos:**
+- `.gitignore` had a bare `models/` pattern intended to exclude a top-level model-artifacts folder, but it matched *any* directory named `models` anywhere in the tree — including `src/models/`. The entire registry module had never been pushed to GitHub since the repo was connected on Day 8. Anchored the pattern to `/models/`.
+- `tests/` had no `__init__.py`, so `tests/test_train_day5.py`'s `from tests.test_registry import FakeModelRegistry` resolved as an implicit namespace package whose behavior depends on pytest's file-collection order — which differs between Windows (where it happened to pass) and Ubuntu (GitHub's runner, where it didn't). Added `tests/__init__.py` to make it an explicit package, removing the OS-dependent behavior.
+
+**For the report.** The Model Registry entry at the Hopsworks project URL is real and can be screenshotted directly; the feature store cannot be, and the report should say so plainly rather than imply otherwise.
+
+---
+
+## ADR-011 - [template]
 
 **Status:** Proposed / Accepted / Rejected
 **Context.**
