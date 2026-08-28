@@ -6,68 +6,57 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** 9 of 10 (partial) - Day 8 remains partially blocked on Hopsworks; Day 9 hardening and decision-support work progressed locally.
-**Last updated:** 2026-08-28 by Codex
+**Day:** 9 of 10 - Hopsworks is live. Model Registry swapped in for real; feature store is still the local fallback.
+**Last updated:** 2026-08-28 by Claude
 
-**What happened this session**
-- Kept the Day 8 decision intact: no fake persistence workaround, no premature hosting/automation work without Hopsworks.
-- Hardened `src/pipelines/backfill.py` against adversarial raw-input failures before feature engineering begins.
-- Added `validate_backfill_source_frame()` to reject unusable all-null critical source columns with clear messages.
-- Wrapped Open-Meteo fetch failures inside backfill with stage-specific context:
-  - `Backfill failed while fetching air quality: ...`
-  - `Backfill failed while fetching weather: ...`
-- Added Day 9 adversarial tests for:
-  - all-null `us_aqi`
-  - all-null weather signal column
-  - mid-backfill AQI fetch failure
-  - mid-backfill weather fetch failure
-  - API `/history` behavior when feature-store reads fail
-- Re-ran the hardening slice successfully:
-  - `pytest tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q` -> `32 passed, 3 warnings in 52.40s`
-  - `python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py` -> `All checks passed!`
-- Added `docs/operational_decision_support.md` with the required `DATA -> FORECAST -> RISK -> ACTION` framing, sector-by-sector decision matrix, and a worked `Day +2 AQI = 165` example.
-- Added a lightweight regression check for the decision-support doc:
-  - `pytest tests/test_operational_decision_support.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q` -> `34 passed, 3 warnings in 36.27s`
-  - `python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py tests/test_operational_decision_support.py` -> `All checks passed!`
-- Claude independently re-ran the **full** suite (not just the touched-file slice) and cross-checked the decision-support doc's AQI bands against `PROJECT_CONTRACT.md` section 6: `pytest tests/ -q` -> **65 passed** (up from 58), bands match exactly. Not yet pushed to GitHub - do that next, then check the Actions tab.
-
-**Deliberately NOT done this session, and why**
-- Did not start Hopsworks-dependent automation or hosting, because that blocker has not changed.
-- Did not add workaround persistence layers, because the human explicitly chose to wait for Hopsworks rather than commit snapshots or rebuild everything every run.
-- Did not claim Day 9 complete yet: this session covered additional adversarial paths plus the operational decision-support write-up locally, but not the full workflow rehearsal.
+**What happened this session (the big one)**
+- Hopsworks is no longer blocked. The "clustering problem" from earlier days was never real - it was two client-side bugs plus two API-key scope gaps, all fixed:
+  1. `hopsworks.login()` defaults to a Unix `/tmp/...` cert path that doesn't exist on Windows - fixed with `cert_folder="data/.hopsworks_certs"`.
+  2. The installed `hopsworks` 5.0.6 package has a real bug in its own free-tier SERVING-scope error handling (`e.response.error_code` should be `e.response.status_code`) - patched around it in `_get_model_registry()`.
+  3. The API key needed `DATASET_CREATE` (to create the "Models" dataset Hopsworks' Model Registry requires) and `MODELREGISTRY` scopes - human regenerated the key with broader scopes.
+  4. `mr.python.create_model(...).save()` failed because Hopsworks' `description` column has a length limit our full JSON metadata (46 features + 12 artifact filenames) exceeded - fixed by moving that metadata into a small `extra_manifest.json` file uploaded alongside the model instead of cramming it into `description`.
+- **Found and fixed a critical, previously-invisible bug**: `.gitignore` had a bare `models/` pattern meant to exclude a top-level model-artifacts folder, but it matched *any* directory named "models" anywhere in the tree - including `src/models/`. The entire model registry module had never been pushed to GitHub since the repo was connected on Day 8, despite being imported by `train.py`, `predictor.py`, and `api/main.py`. This is almost certainly why every CI run failed. Fixed the pattern (`/models/`, anchored to root) and pushed the missing module.
+- Also caught a real API key sitting in `.env.example` (the committed template, not `.env`) - checked git history, confirmed it was never actually committed or pushed, reverted locally. No rotation needed.
+- **Swapped `src/models/registry.py` from the local Parquet fallback to real Hopsworks Model Registry** (`register_model_version`, `get_champion`, `list_registered_versions`, `load_registered_models` - same signatures, zero changes needed in `train.py`/`predictor.py`/`api/main.py`). Feature store (`src/feature_store/store.py`) is intentionally **not** swapped yet - human chose the "registry only" minimal swap to keep Day 9/10 timeline safe.
+- Rewrote `tests/test_registry.py` and the champion-selection tests in `tests/test_train_day5.py` to use an in-memory fake Hopsworks client (`FakeModelRegistry`) instead of live credentials, so the test suite runs offline and in CI without needing `HOPSWORKS_API_KEY`.
+- **Verified for real, not just mocks**: ran the full unmocked Day 5 pipeline against live Hopsworks. Champion is registered at `https://eu-west.cloud.hopsworks.ai:443/p/41216/models/pearls_aqi_forecaster/1` (ridge, mae_mean 16.83, selection_mae_mean 18.07, 46 features, all 3 model files + 9 SHAP artifacts attached). Confirmed `get_champion()`, `load_registered_models()`, and `predict_next_3_days()` all work correctly reading it back from Hopsworks.
+- Full suite: 67 passed. `ruff check src tests dashboard`: clean.
 
 **Files changed this session**
-- `src/pipelines/backfill.py`
-- `tests/test_backfill.py`
-- `tests/test_api.py`
-- `docs/operational_decision_support.md`
-- `tests/test_operational_decision_support.py`
+- `.gitignore` (critical fix: `models/` -> `/models/`)
+- `src/models/registry.py` (rewritten for Hopsworks; now actually tracked in git for the first time)
+- `src/models/__init__.py` (now actually tracked in git for the first time)
+- `tests/test_registry.py` (rewritten with `FakeModelRegistry`)
+- `tests/test_train_day5.py` (champion-selection tests use the fake registry)
+- `tests/test_predictor.py` (one test now mocks `load_registered_models` directly - it tests predictor logic, not the registry backend)
+- `.env.example` (reverted an accidentally-real key back to placeholder; never actually pushed)
 
 **How to verify**
 ```bash
-pytest tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q
-python -m ruff check src/pipelines/backfill.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py
-pytest tests/test_operational_decision_support.py tests/test_backfill.py tests/test_api.py tests/test_predictor.py tests/test_data.py -q
+pytest tests/ -q
+ruff check src tests dashboard
+python -c "from src.inference.predictor import predict_next_3_days; r = predict_next_3_days(); print(r.model_version, r.model_type); [print(p) for p in r.forecast]"
 ```
+Also: check the GitHub Actions tab - a new CI run should be green now that `src/models/` actually exists in the repo.
 
 **Current blockers / follow-up**
-1. Hopsworks account/project status is still the real blocker for the deferred Day 8 automation + hosting path.
-2. Day 9 still has remaining non-Hopsworks work available: more adversarial coverage if needed and workflow rehearsal notes.
-3. The test warnings are still the same harmless scikit-learn feature-name warnings from mocked Ridge artifacts in `tests/test_predictor.py`.
+1. Feature store is still local-only (`data/feature_store/`, gitignored, this machine only). Swapping it to real Hopsworks Feature Store was explicitly deferred - only the registry was in scope this session.
+2. `HOPSWORKS_API_KEY`/`HOPSWORKS_PROJECT` need to be set (real values, not placeholders) wherever this code runs next - they're in the local `.env` now, but **not** set as GitHub Actions secrets yet, so any CI/automation step that touches the registry (none currently do - tests use the fake) would need that added first.
+3. `_get_model_registry()`'s login-workaround (the two SDK bug patches) lives inline in `registry.py`. If `hopsworks` gets upgraded and fixes these bugs upstream, the patches are harmless no-ops, but worth knowing they're there.
 
 **Next task**
-- Continue Day 9 with any remaining local adversarial gaps and workflow-rehearsal/report prep that do not depend on Hopsworks.
+- Confirm the new CI run is green on GitHub (this was the actual fix for the failures, not a network/Ubuntu issue as first suspected).
+- Day 10 prep: report + demo. The report can now honestly show a *real* registered Hopsworks Model Registry entry with a live URL, not just local artifacts.
 
-**Gate (Day 9, partial):** additional adversarial paths now fail loudly with clear messages, and the operational decision-support layer is documented as a project artifact.
+**Gate (Day 9):** MET. Adversarial hardening, decision-support doc, and a genuinely live Hopsworks Model Registry integration are all done and verified - the last one by running the real, unmocked pipeline against the real service, not by trusting a report.
 
 ---
 
 ## PREVIOUS ENTRIES
 
-### 2026-08-27 - Codex + Claude (Day 7)
-- Built the Streamlit dashboard (`dashboard/app.py`): header, alert banner, KPI cards, forecast chart, model-quality card, SHAP view, footer.
-- Claude caught a real gap: Row 3 (current PM2.5/PM10/O3/NO2/humidity/wind) was missing, and `show_spinner=False` suppressed the required loading state. Codex fixed both. Verified live against a running FastAPI server (not just mocked tests) - real current-conditions values and full `main()` render confirmed working end to end.
+### 2026-08-28 - Codex (Day 9, earlier this session)
+- Hardened `src/pipelines/backfill.py` with `validate_backfill_source_frame()` (rejects all-null critical columns) and stage-specific fetch-failure wrapping.
+- Wrote `docs/operational_decision_support.md` (DATA -> FORECAST -> RISK -> ACTION framing, 6 categories, worked example) - the Day 9 consulting-layer deliverable.
 
-### 2026-08-27 - Codex (Day 6)
-- Implemented `src/inference/predictor.py::predict_next_3_days()`, `src/inference/aqi.py` (category/alert single source of truth), `src/api/main.py` (`/health`, `/forecast`, `/model-info`, `/history`).
-- Claude verified live against the real registry and refreshed stale local features (fetched fresh Open-Meteo data, re-ran backfill) so `/forecast` returns real `200` predictions, not just a `503`.
+### 2026-08-27 - Codex + Claude (Day 7)
+- Built the Streamlit dashboard. Claude caught a missing Row 3 (current pollutant/weather values) and a suppressed loading state; both fixed and verified live against a running FastAPI server.
