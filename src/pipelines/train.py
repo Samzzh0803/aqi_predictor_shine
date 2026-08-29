@@ -88,7 +88,23 @@ class Day5Artifacts:
     rolling_validation_summary: pd.DataFrame
     top_two_models: list[str]
     champion_name: str
+    champion_result: ModelRunResult
+    feature_columns: list[str]
+    data_start: str
+    data_end: str
     shap_artifact_paths: dict[str, str]
+    registered_version: RegisteredModelVersion | None
+
+
+@dataclass(frozen=True)
+class DailyTrainingDecision:
+    """Decision summary for the automated daily training job."""
+
+    candidate_champion_name: str
+    candidate_metrics: dict[str, float]
+    incumbent_version: int | None
+    incumbent_metrics: dict[str, float] | None
+    promoted: bool
     registered_version: RegisteredModelVersion | None
 
 
@@ -225,7 +241,62 @@ def run_day5_pipeline(register_in_local_registry: bool = True) -> Day5Artifacts:
         rolling_validation_summary=rolling_validation.summary,
         top_two_models=get_top_two_model_names(comparison),
         champion_name=champion_name,
+        champion_result=champion_result,
+        feature_columns=feature_columns,
+        data_start=frame["event_time"].min().isoformat(),
+        data_end=frame["event_time"].max().isoformat(),
         shap_artifact_paths=shap_artifact_paths,
+        registered_version=registered_version,
+    )
+
+
+def run_daily_training_job() -> DailyTrainingDecision:
+    """Train a fresh candidate and register it only if it beats the incumbent."""
+
+    incumbent = _safe_get_existing_champion()
+    artifacts = run_day5_pipeline(register_in_local_registry=False)
+    champion_row = artifacts.comparison.loc[
+        artifacts.comparison["model"] == artifacts.champion_name
+    ].iloc[0]
+    candidate_metrics = {
+        **artifacts.champion_result.metrics.copy(),
+        "selection_mae_mean": float(champion_row["selection_mae_mean"]),
+        "selection_mae_std": float(champion_row["selection_mae_std"]),
+    }
+    promoted = _should_promote_candidate(candidate_metrics, incumbent)
+    registered_version = None
+
+    if promoted:
+        registered_version = register_model_version(
+            model_name=MODEL_NAME,
+            model_type=artifacts.champion_name,
+            fitted_models=artifacts.champion_result.fitted_models,
+            metrics=candidate_metrics,
+            feature_list=artifacts.feature_columns,
+            data_start=artifacts.data_start,
+            data_end=artifacts.data_end,
+            shap_artifact_paths=artifacts.shap_artifact_paths,
+        )
+
+    LOGGER.info(
+        "Daily training decision",
+        extra={
+            "candidate_champion_name": artifacts.champion_name,
+            "candidate_selection_mae_mean": candidate_metrics["selection_mae_mean"],
+            "incumbent_version": None if incumbent is None else incumbent.version,
+            "incumbent_selection_mae_mean": None
+            if incumbent is None
+            else float(incumbent.metrics.get("selection_mae_mean", incumbent.metrics["mae_mean"])),
+            "promoted": promoted,
+            "registered_version": None if registered_version is None else registered_version.version,
+        },
+    )
+    return DailyTrainingDecision(
+        candidate_champion_name=artifacts.champion_name,
+        candidate_metrics=candidate_metrics,
+        incumbent_version=None if incumbent is None else incumbent.version,
+        incumbent_metrics=None if incumbent is None else incumbent.metrics,
+        promoted=promoted,
         registered_version=registered_version,
     )
 
@@ -899,6 +970,34 @@ def _validate_training_frame(frame: pd.DataFrame) -> None:
         )
     if frame.duplicated(subset=["city_id", "event_time"]).any():
         raise OpenMeteoClientError("Training frame contains duplicate (city_id, event_time) keys")
+
+
+def _safe_get_existing_champion() -> RegisteredModelVersion | None:
+    try:
+        return get_champion()
+    except OpenMeteoClientError:
+        return None
+
+
+def _should_promote_candidate(
+    candidate_metrics: dict[str, float],
+    incumbent: RegisteredModelVersion | None,
+) -> bool:
+    if incumbent is None:
+        return True
+    incumbent_selection_mae = float(
+        incumbent.metrics.get("selection_mae_mean", incumbent.metrics["mae_mean"])
+    )
+    incumbent_selection_std = float(incumbent.metrics.get("selection_mae_std", 0.0))
+    return (
+        float(candidate_metrics["selection_mae_mean"]),
+        float(candidate_metrics["selection_mae_std"]),
+        float(candidate_metrics["mae_mean"]),
+    ) < (
+        incumbent_selection_mae,
+        incumbent_selection_std,
+        float(incumbent.metrics["mae_mean"]),
+    )
 
 
 if __name__ == "__main__":

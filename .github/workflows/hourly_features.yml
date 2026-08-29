@@ -1,0 +1,33 @@
+name: Hourly Features
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Smoke check Hopsworks secrets
+        run: python -c "from src.config import get_settings; s=get_settings(); assert s.hopsworks_api_key and s.hopsworks_project, 'HOPSWORKS_API_KEY and HOPSWORKS_PROJECT must be set'"
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+
+      - name: Run hourly feature refresh
+        run: python -m src.pipelines.hourly_features
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+
