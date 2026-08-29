@@ -5,11 +5,17 @@
 data/raw/
 data/processed/
 data/feature_store/
-data/metrics/
+data/metrics/*
 data/model_registry/
 data/.hopsworks_certs/
 *.parquet
 *.csv
+
+# ...except the small Day 5 SHAP/summary artifacts the deployed dashboard reads directly
+!data/metrics/day5_summary.json
+!data/metrics/shap/
+!data/metrics/shap/*.csv
+!data/metrics/shap/*.png
 
 # Python
 __pycache__/
