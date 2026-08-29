@@ -1,6 +1,6 @@
 # Pearls AQI Predictor — Final Report
 
-**City:** Lahore, Pakistan (31.5497, 74.3436) · **Period:** 10-day build · **Status:** MVP complete, feature store and hosting deferred (see §19)
+**City:** Lahore, Pakistan (31.5497, 74.3436) · **Period:** 10-day build + feature-store swap · **Status:** MVP complete, hosting and automation deferred (see §19)
 
 ---
 
@@ -10,7 +10,7 @@ This project builds a reproducible, serverless air-quality forecasting system fo
 
 The registered champion — a Ridge regression model — reduces mean absolute error by **25.9% relative to a persistence baseline** (16.83 vs. 22.70 AQI points, averaged across the three forecast horizons), a result consistent with the target's known heavy autocorrelation and squarely inside the 20–40% realistic range set out in the project's own methodology, rather than an implausibly large "80% improvement" that would suggest leakage.
 
-The one open piece is infrastructure, not modelling: the Model Registry is genuinely live on Hopsworks; the feature store remains a local fallback, and hourly/daily automation and public hosting were deliberately deferred rather than built on a shaky foundation. Both are scoped and ready to complete once time permits (§19, §22).
+The one open piece is infrastructure, not modelling: both the Model Registry and the Feature Store are now genuinely live on Hopsworks; hourly/daily automation and public hosting were deliberately deferred rather than built on a shaky foundation. Both are scoped, now fully unblocked, and ready to complete once time permits (§19, §22).
 
 ## 2. Business problem
 
@@ -137,7 +137,11 @@ SHAP is dispatched by champion model type — `TreeExplainer` for Random Forest/
 
 ## 13. Feature store
 
-**Status: local Parquet fallback, not yet Hopsworks-backed** (`ADR-008`, `ADR-010`). `src/feature_store/store.py` implements the exact function signatures (`insert_features`, `insert_targets`, `create_feature_view`, `load_feature_view`, etc.) that a Hopsworks-backed implementation would need, so the swap is a backend substitution, not a redesign of any calling code. This was deferred deliberately to protect the Day 9/10 timeline once the Model Registry swap (§14) was confirmed working — see `ADR-010` for the full reasoning.
+**Status: live on Hopsworks, verified with a real unmocked backfill** (`ADR-008`, `ADR-010`, `ADR-011`). `src/feature_store/store.py` was swapped from the Day 3 local-Parquet fallback to the real Hopsworks Feature Store behind identical function signatures — `backfill.py`, `train.py`, `predictor.py`, and `api/main.py` needed zero changes.
+
+The Day 3 gate (rebuild the full training set from the Feature Store alone, no local cache) was re-run against the live project: `aqi_features_v1` holds 35,712 rows (2022-08-01 00:00 → 2026-08-27 23:00 UTC, 0 duplicate keys) — matching the local raw cache's row count exactly — `aqi_targets_v1` holds 35,545 rows, and the Feature View `aqi_fv_v1`'s materialized training set is 35,545 rows × 53 columns with 0 duplicate keys and 0 nulls across all three target columns.
+
+Getting a genuine, unmocked pipeline run working took six real, non-cosmetic fixes — most notably that Hopsworks' default Feature View join is point-in-time-correct (matching each row to the *most recently available* value at or before its event_time), which would have silently reused stale target values for rows that shouldn't have known targets yet, a real leakage risk rather than a cosmetic mismatch. The actual training frame is built from a verified exact `(city_id, event_time)` inner merge of the two feature groups instead of trusting the Feature View's own read path. Full detail, including the free-tier statistics-computation flakiness and a too-short default Kafka timeout, is in `ADR-011`.
 
 ## 14. Model registry
 
@@ -147,7 +151,7 @@ Getting here required diagnosing and fixing four real issues, none of which were
 
 ## 15. Automated pipelines
 
-**Status: CI only.** `.github/workflows/ci.yml` runs `ruff` + the full 67-test suite (mocking all external services, including an in-memory fake Hopsworks client — no credentials needed) on every push and PR to `main`, and is currently green. `hourly_features.yml` and `daily_training.yml` (per `ARCHITECTURE.md`'s design) are not yet built — both require the feature-store swap (§13) so that state can persist across GitHub Actions' inherently ephemeral runners, which is exactly the problem Hopsworks' Feature Store is designed to solve.
+**Status: CI only.** `.github/workflows/ci.yml` runs `ruff` + the full 68-test suite (mocking all external services, including in-memory fake Hopsworks clients for both the Feature Store and the Model Registry — no credentials needed) on every push and PR to `main`, and is currently green. `hourly_features.yml` and `daily_training.yml` (per `ARCHITECTURE.md`'s design) are not yet built. They no longer have an infrastructure blocker — the Feature Store swap (§13) means state now persists across GitHub Actions' inherently ephemeral runners — this is simply not-yet-built scope.
 
 ## 16. FastAPI
 
@@ -155,16 +159,15 @@ Getting here required diagnosing and fixing four real issues, none of which were
 
 ## 17. Streamlit dashboard
 
-One page: header (city, last data update, last training time, champion version), an alert banner when any horizon crosses AQI 151, four KPI cards, a 7-day-history-plus-3-day-forecast Plotly chart with a visual break at the forecast origin, current pollutant/weather readings (PM2.5, PM10, O₃, NO₂, humidity, wind — read directly from the local feature store), SHAP drivers with plain-language bullets, and a model-quality card. Verified live against a running FastAPI server, not just mocked tests.
+One page: header (city, last data update, last training time, champion version), an alert banner when any horizon crosses AQI 151, four KPI cards, a 7-day-history-plus-3-day-forecast Plotly chart with a visual break at the forecast origin, current pollutant/weather readings (PM2.5, PM10, O₃, NO₂, humidity, wind — read directly from the Hopsworks Feature Store), SHAP drivers with plain-language bullets, and a model-quality card. Verified live against a running FastAPI server, not just mocked tests.
 
 ## 18. Deployment
 
-**Not yet deployed publicly.** The intended path (`ADR-007`) is Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API, both free and requiring no credit card. Both need the running application to reach a persistent feature/model store from wherever they're hosted — the Model Registry side of that is solved (§14); the feature-store side isn't yet (§13). `dashboard/app.py` already reads its API URL from an environment variable rather than a hardcoded `localhost`, so pointing it at a deployed API is a one-line configuration change once hosting is undertaken.
+**Not yet deployed publicly.** The intended path (`ADR-007`) is Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API, both free and requiring no credit card. Both need the running application to reach a persistent feature/model store from wherever they're hosted — both the Model Registry (§14) and the Feature Store (§13) sides of that are now solved. `dashboard/app.py` already reads its API URL from an environment variable rather than a hardcoded `localhost`, so pointing it at a deployed API is a one-line configuration change once hosting is undertaken.
 
 ## 19. Limitations
 
-- **Feature store is local, not managed.** It exists only on the development machine; there's no remote read path for a deployed API or a scheduled job. This is the single largest gap between the current system and the frozen contract's stated objective.
-- **No automated hourly/daily refresh.** Features and the champion model reflect whenever `backfill.py`/`train.py` were last run manually.
+- **No automated hourly/daily refresh.** Features and the champion model reflect whenever `backfill.py`/`train.py` were last run manually. No longer infrastructure-blocked (§13, §15) — just not yet built.
 - **Not publicly hosted.** No live URL exists yet for the API or dashboard.
 - **CAMS coverage for this region is 3-hourly, interpolated to hourly** by the data provider — a real resolution limit, not an artifact of this project's processing.
 - **Weather-forecast features are excluded from v1 by design** (`ADR-006`) to avoid training/serving skew that would otherwise inflate validation numbers without a genuine accuracy gain.
@@ -181,8 +184,8 @@ The forecast is designed to feed operational decisions via a `DATA → FORECAST 
 
 ## 22. Future improvements
 
-In priority order: (1) swap the feature store to Hopsworks, unblocking automated hourly/daily pipelines and public hosting; (2) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (3) multi-city support, after the single-city path is fully automated; (4) prediction uncertainty intervals; (5) drift detection comparing live prediction error against the registered validation metrics over time; (6) OpenAQ ground-sensor cross-validation as an independent data-quality check.
+In priority order: (1) hourly/daily automation (`hourly_features.yml`, `daily_training.yml`) now that both Hopsworks stores are live; (2) public hosting (Streamlit Community Cloud + Hugging Face Spaces per `ADR-007`); (3) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (4) multi-city support, after the single-city path is fully automated; (5) prediction uncertainty intervals; (6) drift detection comparing live prediction error against the registered validation metrics over time; (7) OpenAQ ground-sensor cross-validation as an independent data-quality check.
 
 ## 23. Conclusion
 
-The core data-science claim of this project is real and defensible: a Ridge regression champion, selected by disciplined time-aware validation rather than a single lucky test split, reduces forecast error by 25.9% relative to a persistence baseline — a result that sits exactly where the project's own methodology predicted a genuine, non-leaked model should land. Getting that result required real engineering discipline along the way: catching a contract-violating feature set after the fact and re-verifying the fix changed almost nothing (§8), catching that a single-split evaluation would have made an unstable neural network look competitive (§9, §11), and diagnosing four separate, non-obvious integration bugs to get a genuinely live Hopsworks Model Registry rather than settling for a local stand-in (§14, `ADR-010`). What remains — the feature-store swap and public hosting — is well-scoped, not blocked on anything unresolved, and is the natural next increment on top of a foundation that is already correct.
+The core data-science claim of this project is real and defensible: a Ridge regression champion, selected by disciplined time-aware validation rather than a single lucky test split, reduces forecast error by 25.9% relative to a persistence baseline — a result that sits exactly where the project's own methodology predicted a genuine, non-leaked model should land. Getting that result required real engineering discipline along the way: catching a contract-violating feature set after the fact and re-verifying the fix changed almost nothing (§8), catching that a single-split evaluation would have made an unstable neural network look competitive (§9, §11), diagnosing four separate, non-obvious integration bugs to get a genuinely live Hopsworks Model Registry (§14, `ADR-010`), and diagnosing six more to get a genuinely live Feature Store without reintroducing the exact leakage this project spent Day 2 guarding against (§13, `ADR-011`). What remains — automation and public hosting — is well-scoped, not blocked on anything unresolved, and is the natural next increment on top of a foundation that is already correct.

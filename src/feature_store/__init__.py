@@ -1,4 +1,4 @@
-"""Feature store interfaces for Day 3 local Parquet fallback."""
+"""Feature store interfaces backed by the Hopsworks Feature Store."""
 
 from src.feature_store.store import (
     FEATURES_PRIMARY_KEYS,

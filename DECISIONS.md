@@ -157,7 +157,33 @@ All four are worked around or fixed in `src/models/registry.py::_get_model_regis
 
 ---
 
-## ADR-011 - [template]
+## ADR-011 - Feature Store swapped to real Hopsworks; local-Parquet fallback retired
+
+**Status:** Accepted on 2026-08-29.
+
+**Context.** `ADR-008` allowed a local-Parquet fallback for Day 3 if Hopsworks integration blew its time cap, on the condition it keep the intended real-backend function signatures. `ADR-010` (Day 9) swapped the Model Registry to real Hopsworks but explicitly deferred the Feature Store swap. It remained the single biggest gap between this system and the frozen contract's full objective, and the prerequisite for real hourly/daily automation and for hosting that doesn't go stale after 48h.
+
+**Decision.** Swap `src/feature_store/store.py` to the real Hopsworks Feature Store, mirroring `ADR-010`'s pattern exactly: identical public function signatures (`insert_features`, `insert_targets`, `load_features`, `load_targets`, `create_feature_view`, `load_feature_view`, `verify_feature_group`, minus the local-only `path=` test-plumbing parameter), a lazily-imported, cached `_get_feature_store()` login. `backfill.py`, `train.py`, `predictor.py`, and `api/main.py` needed zero changes.
+
+Getting a real, unmocked pipeline run working (not just a login test) took six real, fixable issues, none of them typos:
+
+1. **hopsworks isn't pip-installable on this machine as-is.** It requires `hsfs[python]`, which requires `pyhopshive[thrift]`, which requires `pyjks`, which hard-requires `twofish` — a C extension with no prebuilt Windows wheel, and this machine has no MSVC compiler. `twofish` is only used by `pyjks` to decrypt legacy Bouncy-Castle "BKS" Java keystores encrypted with `PBEWithSHAAndTwofish-CBC` — a code path Hopsworks' API-key/cert auth never exercises. Worked around with a local no-op stub package (raises `NotImplementedError` if ever actually invoked, rather than silently returning wrong data) satisfying pip's resolver.
+2. **`confluent-kafka` was needed separately.** The resolved `hopsworks` 5.0.6 install didn't pull it in even though the Python engine's write path requires it; installed directly (it does ship a prebuilt Windows wheel, unlike `twofish`).
+3. **Default `time_travel_format="DELTA"` needs the optional `delta`/`deltalake` package**, not installed. Feature groups are created with `time_travel_format="HUDI"` instead — no extra dependency, and matches `ARCHITECTURE.md` §3's assumption of primary_key + event_time offline uniqueness.
+4. **Per-insert statistics computation is flaky on the free tier.** Every Hudi write triggered a follow-up call to compute feature-group statistics that failed with HTTP 500 `"Transaction marked for rollback"`, marking the materialization job FAILED even though the actual Hudi write had already succeeded (verified: the rows were there). Feature groups are now created with `statistics_config=False`; we don't use per-feature-group statistics.
+5. **`Query.join()` semantics don't match what `on=["city_id", "event_time"]` implies.** `event_time` isn't a primary key on either feature group, so passing it in `on` fails outright (`"event_time is not primary key in feature group"`). Joining on `on=["city_id"]` alone succeeds, but the resulting Feature View's `get_batch_data()` turned out to do a point-in-time-correct join (matching each feature row to the *most recently available* target row at or before its event_time) rather than an exact-timestamp match — silently reusing stale target values for the trailing rows `build_targets()` had already dropped as incomplete. That's a real leakage risk, not a cosmetic mismatch. Fixed by not trusting the Feature View's own read path for the actual training frame: `create_feature_view()`/`load_feature_view()` still create/verify a real Feature View object in Hopsworks (for lineage and the report screenshot), but the returned training frame is built by `_build_training_frame()`, an exact `(city_id, event_time)` inner merge of `load_features()`/`load_targets()` — the same DataFrame-level join the local fallback always did, and the same one the leakage tests already cover.
+6. **Ambiguous-column auto-prefixing.** Selecting `select_all()` on both sides of the join (both feature groups carry `city_id`/`event_time`) makes hsfs rename the right side's columns (e.g. `aqi_targets_v1_target_aqi_day1`), breaking the plain `target_aqi_day{1,2,3}` names `train.py` expects. Fixed by selecting only `TARGET_COLUMNS` from the targets side.
+7. **The Python engine's default `kafka_timeout` (6s) is too short for this network path.** The materialization write buffers through an external SSL Kafka broker; TCP connectivity and the SSL certs were both confirmed fine, the round-trip just took longer than 6s. Raised to 60s via `write_options={"kafka_timeout": 60}` on insert — the same "free tier is not fast" caveat `TASKS.md` already called out for Day 3.
+
+**Consequence.** `tests/test_feature_store.py` adds a `FakeFeatureStore`/`FakeFeatureGroup` in-memory double (mirroring `test_registry.py`'s `FakeModelRegistry`), reused by `test_backfill.py` and `test_train.py` in place of the old local-parquet-path fixtures. Because `_get_feature_store()` imports `hopsworks` lazily (same pattern as `registry.py`), the offline suite needs no real Hopsworks package installed.
+
+Full historical backfill (2022-08-01 → today) run against the live project. Day 3 gate re-verified with a fresh process reading from Hopsworks alone, no local cache: `aqi_features_v1` 35,712 rows (2022-08-01 00:00 → 2026-08-27 23:00 UTC, 0 duplicate keys) — matches the local raw cache's row count exactly; `aqi_targets_v1` 35,545 rows (0 duplicates); the joined training set (`_build_training_frame()`) is 35,545 rows × 53 columns, 0 duplicate `(city_id, event_time)` keys, 0 nulls across all three target columns.
+
+**For the report.** Both the Model Registry and the Feature Store (`aqi_features_v1`, `aqi_targets_v1`, `aqi_fv_v1`) are now genuinely Hopsworks-backed and screenshot-able.
+
+---
+
+## ADR-012 - [template]
 
 **Status:** Proposed / Accepted / Rejected
 **Context.**

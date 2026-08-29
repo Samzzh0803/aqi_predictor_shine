@@ -64,7 +64,7 @@ AQI_API_BASE=            # optional; leave blank to use Open-Meteo defaults
 
 ## Run backfill
 
-Fetches full history and populates the local feature-store cache (`src/feature_store/store.py`; a local Parquet fallback — see [Known limitations](#known-limitations)):
+Fetches full history and populates the Hopsworks Feature Store (`src/feature_store/store.py`; `aqi_features_v1`, `aqi_targets_v1`, `aqi_fv_v1`):
 
 ```bash
 python -m src.pipelines.backfill
@@ -108,16 +108,15 @@ pytest tests/ -q
 ruff check src tests dashboard
 ```
 
-The suite (67 tests) mocks all external services (Open-Meteo HTTP calls, Hopsworks via an in-memory fake client) — no credentials or network access are required to run it. CI (`.github/workflows/ci.yml`) runs this on every push/PR to `main`.
+The suite (68 tests) mocks all external services (Open-Meteo HTTP calls, Hopsworks via in-memory fake clients for both the Feature Store and the Model Registry) — no credentials or network access are required to run it. CI (`.github/workflows/ci.yml`) runs this on every push/PR to `main`.
 
 ## Deployment
 
-Not yet deployed publicly. Per `ADR-007`, the intended path is Streamlit Community Cloud (dashboard) + Hugging Face Spaces, Docker SDK (API), both free and requiring no credit card. This was deferred alongside hourly/daily automation because both need a persistent feature/model store reachable from ephemeral compute — see [Known limitations](#known-limitations).
+Not yet deployed publicly. Per `ADR-007`, the intended path is Streamlit Community Cloud (dashboard) + Hugging Face Spaces, Docker SDK (API), both free and requiring no credit card. This was deferred alongside hourly/daily automation — see [Known limitations](#known-limitations).
 
 ## Known limitations
 
-- **Feature store is local-only.** The Model Registry is genuinely Hopsworks-backed and verified live; the feature store (`src/feature_store/store.py`) is still the Day 3 local-Parquet fallback, deliberately not swapped this cycle to protect the Day 9/10 timeline. See `ADR-008`, `ADR-010`.
-- **No hourly/daily automation yet.** `hourly_features.yml` and `daily_training.yml` (referenced in `ARCHITECTURE.md`) don't exist yet — they need the feature-store swap above to persist state across ephemeral GitHub Actions runs.
+- **No hourly/daily automation yet.** `hourly_features.yml` and `daily_training.yml` (referenced in `ARCHITECTURE.md`) don't exist yet.
 - **Not publicly deployed.** See Deployment above.
 - **CAMS air-quality coverage for this region is 3-hourly**, interpolated to hourly by Open-Meteo; see `ADR-002`.
 - **Weather-forecast features are intentionally excluded from v1** to avoid training/serving skew — see `ADR-006`.

@@ -6,44 +6,40 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** 10 of 10 - report, README, and demo script written. Project is MVP-complete with two honestly-documented gaps (feature store, hosting).
+**Day:** Post-10, feature-store swap. Both Hopsworks-backed pieces (Model Registry, Feature Store) are now genuinely live. Remaining gaps are automation and public hosting only.
 **Last updated:** 2026-08-29 by Claude
 
 **What happened this session**
-- Wrote `README.md` (didn't exist before): what it does, architecture, install, env vars, how to run every pipeline, deployment status, known limitations, data attribution.
-- Wrote `docs/REPORT.md`: the full 23-section report from `TASKS.md`, built entirely from real, verified numbers - the Day 4/5 comparison table, the rolling-validation table, real SHAP feature rankings, real dataset row counts, the real Hopsworks Model Registry URL. No placeholder numbers anywhere.
-- Wrote `docs/DEMO.md`: a 9-beat, <10-minute demo script, honest about what's live (Model Registry, CI, dashboard, API) vs. deferred (feature store swap, automation, public hosting) - includes a "what to say if it breaks live" section.
-- Added `ADR-010` to `DECISIONS.md`, formally recording the Hopsworks Model Registry swap, the four SDK/scope bugs that had to be fixed to get there, and the reasoning for *not* swapping the feature store in the same cycle.
-- Verified: full suite still 67 passed after all doc changes (no code touched this session).
-
-**Files changed this session**
-- `README.md` (new)
-- `docs/REPORT.md` (new)
-- `docs/DEMO.md` (new)
-- `DECISIONS.md` (ADR-010 added)
-- `HANDOFF.md`
+- Swapped `src/feature_store/store.py` from the Day 3 local-Parquet fallback (`ADR-008`) to the real Hopsworks Feature Store, mirroring `ADR-010`'s pattern exactly: same public function signatures (minus the local-only `path=` test parameter), lazy/cached `_get_feature_store()` login. Zero changes needed to `backfill.py`, `train.py`, `predictor.py`, `api/main.py`.
+- Found and fixed six real, non-cosmetic issues getting a genuine unmocked pipeline run working (full detail in `ADR-011`): `DELTA` time-travel format needs an uninstalled package (switched to `HUDI`); free-tier per-insert statistics computation is flaky (HTTP 500, disabled); `Query.join()` on `event_time` fails outright since it isn't a primary key, and the resulting Feature View read path turned out to silently reuse stale target values for rows that shouldn't have known targets yet (a real leakage risk) — worked around by building the actual training frame from a verified local `(city_id, event_time)` inner merge rather than trusting the Feature View's own batch-read; ambiguous-column auto-prefixing on overlapping join columns; a too-short default Kafka metadata timeout for this network path (broker reachable, cert valid, just slow — raised to 60s).
+- Also needed, to get `hopsworks` installed and working on this Windows dev machine at all (separate from the product code, recorded in `ADR-011` for the next session's benefit): a local no-op stub for `twofish` (a hard transitive dependency of `pyjks` with no prebuilt Windows wheel, needed for a legacy Java-keystore decryption path this project never exercises), `confluent-kafka` installed explicitly (now added to `requirements.txt`), and a VC++ 2022 redistributable install to fix an unrelated pre-existing TensorFlow DLL load failure that was blocking 5 of 9 test files from even collecting.
+- New `tests/test_feature_store.py`: a `FakeFeatureStore`/`FakeFeatureGroup` in-memory double (mirrors `test_registry.py`'s `FakeModelRegistry`), reused by `tests/test_backfill.py` and `tests/test_train.py` in place of the old local-parquet-path fixtures. Offline suite needs no real `hopsworks` package installed (same lazy-import pattern as `registry.py`).
+- Ran the real Day 3 gate against live Hopsworks: full historical backfill (2022-08-01 → today), then a fresh process rebuilding the training set from the Feature Store alone with no local cache involved. Results: `aqi_features_v1` 35,712 rows (2022-08-01 00:00 → 2026-08-27 23:00 UTC, 0 duplicates) — matches the local raw cache's row count exactly; `aqi_targets_v1` 35,545 rows (0 duplicates); the joined training set is 35,545 rows (53 columns), 0 duplicate keys, 0 nulls in any of the three target columns.
+- Updated `README.md` (feature store no longer described as local-only) and `requirements.txt` (`confluent-kafka` added).
 
 **How to verify**
 ```bash
 pytest tests/ -q
 ruff check src tests dashboard
 ```
-Read `docs/REPORT.md` end to end - every number in it should trace back to a file in `data/metrics/` or a command run during this project, not to something invented for the report.
+Both offline, no credentials needed (fakes only). For the live path, `.env` already has working `HOPSWORKS_API_KEY`/`HOPSWORKS_PROJECT` (same ones the Model Registry uses) — `python -m src.pipelines.backfill` populates the real Feature Store.
 
 **Current blockers / follow-up**
-1. Feature store is still local-only (`ADR-008`) - the single biggest remaining gap between this system and the frozen contract's full objective.
-2. No hourly/daily automation, no public hosting - both documented honestly in `README.md` §Known limitations and `docs/REPORT.md` §13, §15, §18, §19, not silently glossed over.
-3. Everything else in the MVP scope (`PROJECT_CONTRACT.md` §7) is done: backfill, EDA, feature engineering, Ridge/RF/HGB/MLP, persistence baseline, metrics table, live Model Registry, 3-day prediction, FastAPI, Streamlit, SHAP, alerts, CI.
+1. No hourly/daily automation yet (`hourly_features.yml`, `daily_training.yml` per `ARCHITECTURE.md` don't exist) — this is now genuinely unblocked (the Feature Store is live), just not built.
+2. Not publicly hosted — per `ADR-007`, intended path is Streamlit Community Cloud (dashboard) + Hugging Face Spaces (API), both free/no card. Also now unblocked.
+3. On a fresh Windows dev machine, `pip install -r requirements.txt` will hit the `twofish` build failure again unless a compiler is available — see `ADR-011` for the stub workaround (not committed to the repo, since it's a local, machine-specific fix, not a real package).
 
 **Next task**
-- If more time exists: the feature-store swap (§13, §22 of `docs/REPORT.md`) is the highest-leverage next increment - it directly unblocks automation and hosting, the only two things left.
-- Otherwise: this is submittable as-is. Run through `docs/DEMO.md` once end to end before presenting.
+- Automation (`hourly_features.yml` + `daily_training.yml`) or hosting setup — both are now genuinely unblocked. Ask which to prioritize; they don't strictly depend on each other, though automation makes a hosted dashboard meaningfully fresher.
 
-**Gate (Day 10):** MET. Report, README, and demo script exist, are grounded in real verified numbers, and honestly state what's built vs. deferred rather than implying completeness that isn't there.
+**Gate:** MET. Day 3 gate re-verified against the live Feature Store (fresh process, no local cache): 35,712 feature rows / 35,545 target rows / 35,545-row training set, 0 duplicates, 0 target nulls.
 
 ---
 
 ## PREVIOUS ENTRIES
+
+### 2026-08-29 - Claude (Day 10, report/README/demo)
+- Wrote `README.md`, `docs/REPORT.md`, `docs/DEMO.md`; added `ADR-010` recording the Model Registry swap. Full suite 67 passed. See prior git history for detail — superseded by this session's entry above.
 
 ### 2026-08-28 - Claude (Day 9, Hopsworks live)
 - Diagnosed and fixed four real Hopsworks SDK/scope issues (Windows cert path, a genuine SDK bug in free-tier error handling, two missing API-key scopes, a `description` length limit) to get the Model Registry genuinely working - verified with a real, unmocked pipeline run and a real registered champion.

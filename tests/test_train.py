@@ -7,8 +7,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.feature_store import store
-from src.feature_store.store import create_feature_view, insert_features, insert_targets
+from src.feature_store import store as store_module
+from src.feature_store.store import (
+    FEATURE_VIEW_NAME,
+    FEATURE_VIEW_VERSION,
+    insert_features,
+    insert_targets,
+)
 from src.features.build_features import build_features
 from src.features.build_targets import build_targets
 from src.pipelines.train import (
@@ -20,6 +25,14 @@ from src.pipelines.train import (
     load_training_frame,
     prepare_modeling_frame,
 )
+from tests.test_feature_store import FakeFeatureStore
+
+
+@pytest.fixture()
+def fake_feature_store(monkeypatch: pytest.MonkeyPatch) -> FakeFeatureStore:
+    fs = FakeFeatureStore()
+    monkeypatch.setattr(store_module, "_get_feature_store", lambda: fs)
+    return fs
 
 
 def _load_raw_frame() -> pd.DataFrame:
@@ -44,26 +57,15 @@ def test_chronological_split_keeps_time_order() -> None:
 
 
 def test_load_training_frame_rebuilds_feature_view_when_missing(
-    tmp_path: Path,
-    monkeypatch,
+    fake_feature_store: FakeFeatureStore,
 ) -> None:
-    feature_store_root = tmp_path / "feature_store"
-    features_path = feature_store_root / "aqi_features_v1.parquet"
-    targets_path = feature_store_root / "aqi_targets_v1.parquet"
-    feature_view_path = feature_store_root / "aqi_fv_v1.parquet"
-
-    monkeypatch.setattr(store, "_FEATURE_STORE_ROOT", feature_store_root)
-    monkeypatch.setattr(store, "_FEATURES_PATH", features_path)
-    monkeypatch.setattr(store, "_TARGETS_PATH", targets_path)
-    monkeypatch.setattr(store, "_FEATURE_VIEW_PATH", feature_view_path)
-
     raw = _load_raw_frame().iloc[96:500].reset_index(drop=True)
-    insert_features(build_features(raw), path=features_path)
-    insert_targets(build_targets(raw), path=targets_path)
+    insert_features(build_features(raw))
+    insert_targets(build_targets(raw))
 
     training_frame = load_training_frame()
 
-    assert feature_view_path.exists()
+    assert (FEATURE_VIEW_NAME, FEATURE_VIEW_VERSION) in fake_feature_store._feature_views
     assert not training_frame.empty
     assert training_frame["event_time"].is_monotonic_increasing
 
@@ -84,12 +86,12 @@ def test_baselines_use_expected_columns() -> None:
     assert seasonal.metrics["mae_mean"] >= 0
 
 
-def test_get_model_feature_columns_excludes_targets_and_keys(tmp_path: Path) -> None:
+def test_get_model_feature_columns_excludes_targets_and_keys() -> None:
     raw = _load_raw_frame().iloc[96:500].reset_index(drop=True)
-    feature_view = create_feature_view(
-        features=build_features(raw),
-        targets=build_targets(raw),
-        path=tmp_path / "test_train_feature_view.parquet",
+    feature_view = build_features(raw).merge(
+        build_targets(raw),
+        on=["city_id", "event_time"],
+        how="inner",
     )
 
     feature_columns = get_model_feature_columns(feature_view)
