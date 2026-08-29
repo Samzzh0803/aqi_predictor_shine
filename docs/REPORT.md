@@ -165,7 +165,22 @@ One page: header (city, last data update, last training time, champion version),
 
 ## 18. Deployment
 
-**Not yet deployed publicly.** The intended path (`ADR-007`) is Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API, both free and requiring no credit card. Both need the running application to reach a persistent feature/model store from wherever they're hosted — both the Model Registry (§14) and the Feature Store (§13) sides of that are now solved. `dashboard/app.py` already reads its API URL from an environment variable rather than a hardcoded `localhost`, so pointing it at a deployed API is a one-line configuration change once hosting is undertaken.
+**Deployment package prepared; public URLs not created yet.** The intended path (`ADR-007`) remains Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API, both free and requiring no credit card. Both the Model Registry (§14) and the Feature Store (§13) are already live and remotely reachable, so hosting is now a packaging/configuration step rather than an architecture blocker.
+
+Prepared hosting artifacts:
+
+- `docker/Dockerfile.api` runs `uvicorn src.api.main:app --host 0.0.0.0 --port 7860`, matching the Hugging Face Spaces Docker port.
+- `.dockerignore` excludes local-only content (`data/`, `notebooks/`, `.venv/`, `tests/`, `docs/`, `.git/`) so the API image does not ship raw caches or the local development environment.
+- `dashboard/app.py` already reads `API_BASE_URL` from the environment, so Streamlit Community Cloud requires configuration rather than code changes.
+
+Planned public URLs, to be filled after deployment:
+
+- API: `<hugging-face-space-url>`
+- Dashboard: `<streamlit-app-url>`
+
+Manual deployment still needs to happen in the two platform UIs: create a Docker Space, add `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` as Space secrets, deploy the API on port `7860`, then create a Streamlit Community Cloud app from `dashboard/app.py` with Python 3.11 and set `API_BASE_URL` plus the same Hopsworks secrets in Streamlit's settings UI.
+
+One honest verification gap remains: this coding environment does not have Docker installed, so the API container could not be built or run locally from here. The deployment files are prepared, but the final local `docker build` / `docker run` smoke test still needs to be executed on a Docker-enabled machine.
 
 ## 19. Limitations
 

@@ -6,45 +6,46 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** Post-10, automation live and verified. Feature Store, Model Registry, hourly refresh, and daily training/promotion are all genuinely live on real infrastructure. Remaining gap is public hosting only.
-**Last updated:** 2026-08-30 by Claude
+**Day:** Post-10, hosting package prepared. Feature Store, Model Registry, hourly refresh, and daily training/promotion are all genuinely live on real infrastructure. Deployment files and manual cloud setup instructions now exist for the API and dashboard. Remaining gap is creating the actual public deployments and filling in their URLs.
+**Last updated:** 2026-08-30 by Codex
 
 **What happened this session**
-- Reviewed Codex's Day 8 automation diff (`src/pipelines/hourly_features.py`, `run_daily_training_job()` in `train.py`, both workflow YAMLs): hand-verified the `>=72h` target-backfill boundary against `build_targets()`'s actual completeness semantics — correct. Added the one missing test (candidate-beats-incumbent promotion) and restored two README sections a broader rewrite had dropped. Committed and pushed.
-- Live dispatch surfaced three real, previously-undetectable bugs — offline tests never caught any of them because their fixtures don't reflect what a live Hopsworks schema or a live Open-Meteo response actually look like:
-  1. **`ModuleNotFoundError: No module named 'nest_asyncio'`** — `hsfs` imports it unconditionally but the resolved `hopsworks` build didn't declare it as a dependency (same class of gap as the earlier `confluent-kafka` issue). Fixed: pinned `hopsworks==5.0.6` exactly and added `nest_asyncio` to `requirements.txt`.
-  2. **`us_aqi` schema mismatch** (`expected type: 'double', derived from input: 'bigint'`) — a live incremental fetch with no fractional/null AQI values that hour made pandas infer `int64`, disagreeing with the `float64` the historical backfill had locked in. First fix (force `float64` for all Open-Meteo fields in `open_meteo.py`) was too broad.
-  3. **The opposite mismatch** (`relative_humidity_2m`/`cloud_cover`/`wind_direction_10m` expected `bigint`, got `double`) — the fix in #2 broke these three, which the original ~4-year backfill happened to lock in as integer types (never a fractional/null value in the whole history). Real fix: `store.py::_conform_to_schema` now reads the feature group's actual live schema (`fg.columns`) and casts every insert to match it, in whichever direction is needed, rather than guessing a single "correct" dtype at the ingestion layer. Verified directly against the live `aqi_features_v1` schema before pushing. Taught the `FakeFeatureGroup` test double to enforce schema compatibility the way real hsfs does (it previously tolerated any dtype mix silently), and added regression tests for both the `open_meteo.py` dtype-stability case and the schema-conform case.
-- **Live verification, both workflows, real production writes:**
-  - `hourly_features.yml`: `aqi_features_v1` 35,712 → 35,757 rows (+45), `aqi_targets_v1` 35,545 → 35,590 rows (+45), date range extended to 2026-08-29 20:00 UTC, 0 duplicates.
-  - `daily_training.yml`: registered **Model Registry version 2** (Ridge, `mae_mean` ≈16.83) — the promote-vs-skip decision (`_should_promote_candidate`) correctly evaluated the fresh candidate against the incumbent (version 1) and promoted it live.
+- Added `docker/Dockerfile.api` for Hugging Face Spaces' Docker SDK. It installs from the existing `requirements.txt` unchanged, copies only `src/` plus `config/`, and runs `uvicorn src.api.main:app --host 0.0.0.0 --port 7860`.
+- Added `.dockerignore` excluding `data/`, `notebooks/`, `.venv/`, `tests/`, `docs/`, and `.git/` so the API image stays small and does not ship local caches or development-only content.
+- Updated `.env.example` to include `API_BASE_URL`, since the Streamlit deployment needs it even though it is not a secret.
+- Updated `README.md` Deployment and Known Limitations sections with placeholder public URLs, Docker build/run commands, and manual Hugging Face Spaces plus Streamlit Community Cloud setup steps.
+- Updated `docs/REPORT.md` section 18 to reflect that hosting is now packaging/configuration work rather than an unresolved architecture blocker.
+- Could not perform the requested local Docker verification here because this environment does not have the `docker` CLI installed. The commands are documented exactly, but the build/run smoke test still needs to be executed on a Docker-enabled machine.
 
 **How to verify**
 ```bash
-pytest tests/ -q          # 76 passed, offline, no credentials needed (fakes only)
-ruff check src tests dashboard
+docker build -f docker/Dockerfile.api -t pearls-aqi-api .
+docker run --rm -p 7860:7860 -e HOPSWORKS_API_KEY=... -e HOPSWORKS_PROJECT=... pearls-aqi-api
+curl http://127.0.0.1:7860/health
+curl http://127.0.0.1:7860/forecast
 ```
-Live path already proven: both `.github/workflows/hourly_features.yml` and `.github/workflows/daily_training.yml` have a real green dispatch on `main` as of this session.
+Then create the Streamlit Community Cloud app with `dashboard/app.py` as the entrypoint, Python 3.11, `API_BASE_URL=<hugging-face-space-url>`, and the same Hopsworks secrets in the app settings UI.
 
 **Current blockers / follow-up**
-1. Not publicly hosted — per `ADR-007`, intended path is Streamlit Community Cloud (dashboard) + Hugging Face Spaces (API). This is now the only remaining gap in the whole project.
-2. On a fresh Windows dev machine, `pip install -r requirements.txt` can still hit the `twofish` build failure unless a compiler is available — see `ADR-011` for the local workaround (not needed on GitHub Actions' Ubuntu runners, which build it fine).
-3. Repository secrets (`HOPSWORKS_API_KEY`, `HOPSWORKS_PROJECT`) are now set on GitHub — don't re-add/rotate without updating both.
+1. The actual Hugging Face Space and Streamlit Community Cloud app still need to be created manually; no public URLs exist yet.
+2. Local Docker smoke testing is still outstanding because the current environment lacks Docker.
+3. On a fresh Windows dev machine, `pip install -r requirements.txt` can still hit the `twofish` build failure unless a compiler is available - see `ADR-011` for the local workaround.
 
 **Next task**
-- Hosting setup (Streamlit Community Cloud + Hugging Face Spaces). No known blockers remain — the Day 8 gate that used to make a hosted dashboard "stale-looking" is now closed for real.
+- Create the Hugging Face Docker Space, add `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` as Space secrets, deploy the API on port 7860, then create the Streamlit Community Cloud app pointing `API_BASE_URL` at the Space URL.
 
-**Gate (Day 8):** MET. Both workflows dispatched live, wrote real data / registered a real model version, verified server-side against Hopsworks directly (not just green CI checkmarks).
+**Gate (Hosting):** PARTIAL. Deployment files and instructions are ready; actual public cloud deployments and Docker smoke verification still need to be completed outside this environment.
 
 ---
 
 ## PREVIOUS ENTRIES
 
+### 2026-08-30 - Claude (automation live verification)
+- Reviewed Codex's Day 8 automation diff, hand-verified the `>=72h` target-backfill boundary, added the missing promote-when-better test, and pushed the automation work.
+- Live dispatch surfaced three real bugs (`nest_asyncio`, live schema mismatch in both directions); both workflows were then dispatched successfully against the live Hopsworks project, growing the Feature Store and registering Model Registry version 2. See `ADR-012`.
+
 ### 2026-08-29 - Codex (Day 8, hourly/daily automation authored)
-- Added `src/pipelines/hourly_features.py` and `run_daily_training_job()`; added both workflow YAMLs and offline tests. Code-complete and offline-tested but not yet live-dispatched at end of this entry — see this session's entry above for the live verification and the three bugs that surfaced.
+- Added `src/pipelines/hourly_features.py` and `run_daily_training_job()`; added both workflow YAMLs and offline tests. Code-complete and offline-tested before the later live dispatch/review.
 
 ### 2026-08-29 - Claude (Feature Store swap to live Hopsworks)
-- Swapped `src/feature_store/store.py` from the Day 3 local-Parquet fallback to real Hopsworks. Six real issues fixed getting an unmocked run working — see `ADR-011`. Full historical backfill run live (35,712 / 35,545 rows), Day 3 gate re-verified from Hopsworks alone.
-
-### 2026-08-28 - Codex (Day 9, adversarial hardening)
-- Hardened `src/pipelines/backfill.py` against all-null critical columns and mid-fetch failures; wrote `docs/operational_decision_support.md`.
+- Swapped `src/feature_store/store.py` from the Day 3 local-Parquet fallback to real Hopsworks. Six real issues fixed getting an unmocked run working - see `ADR-011`. Full historical backfill run live (35,712 / 35,545 rows), Day 3 gate re-verified from Hopsworks alone.
