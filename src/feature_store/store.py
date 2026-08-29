@@ -135,10 +135,23 @@ def verify_feature_group(frame: pd.DataFrame, key_columns: list[str]) -> dict[st
     }
 
 
+# hsfs column type -> pandas dtype, for conforming an incoming frame to whatever a
+# feature group's schema already locked in (see _conform_to_schema).
+_HSFS_TYPE_TO_PANDAS: Final[dict[str, str]] = {
+    "bigint": "int64",
+    "int": "int32",
+    "double": "float64",
+    "float": "float32",
+    "boolean": "bool",
+    "string": "object",
+}
+
+
 def _insert(frame: pd.DataFrame, *, key_columns: list[str], fg_name: str, description: str) -> pd.DataFrame:
     _validate_frame(frame=frame, key_columns=key_columns)
     fs = _get_feature_store()
     fg = _get_feature_group(fs, fg_name, description=description)
+    frame = _conform_to_schema(frame, fg)
     # The Python engine buffers inserts through Kafka before materializing to Hudi.
     # hsfs's default kafka_timeout (6s) for the metadata round-trip is too short for
     # this free-tier cluster's network path even though the broker is reachable and
@@ -146,6 +159,31 @@ def _insert(frame: pd.DataFrame, *, key_columns: list[str], fg_name: str, descri
     # tier is not fast" applies here too.
     fg.insert(frame, wait=True, write_options={"kafka_timeout": 60})
     return _load(fg_name, key_columns)
+
+
+def _conform_to_schema(frame: pd.DataFrame, fg: Any) -> pd.DataFrame:
+    """Cast columns to match the feature group's already-registered schema.
+
+    A feature group's column types are fixed by whatever pandas happened to infer on
+    its first insert -- e.g. a whole-history backfill where relative_humidity_2m never
+    once had a fractional or null reading infers as 'bigint', while us_aqi (which did,
+    somewhere in ~4 years of data) infers as 'double'. A later incremental insert's own
+    pandas inference depends on that batch's actual values and can easily disagree
+    (a live fetch of exactly-integer AQI readings would infer 'bigint' where the
+    registered schema expects 'double', or vice versa for a fractional humidity
+    reading against a 'bigint' schema). Conform to the registered schema rather than
+    guessing at the ingestion layer -- for a brand-new feature group (no schema
+    registered yet), fg.columns is empty and this is a no-op; the first insert's own
+    dtypes define the schema, same as before.
+    """
+
+    frame = frame.copy()
+    for column in fg.columns:
+        target_dtype = _HSFS_TYPE_TO_PANDAS.get(column.type.lower())
+        if target_dtype is None or column.name not in frame.columns:
+            continue
+        frame[column.name] = frame[column.name].astype(target_dtype)
+    return frame
 
 
 def _load(fg_name: str, key_columns: list[str]) -> pd.DataFrame:

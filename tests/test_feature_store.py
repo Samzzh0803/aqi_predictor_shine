@@ -32,20 +32,62 @@ def _load_raw_frame() -> pd.DataFrame:
     )
 
 
+class _FakeColumn:
+    """Stand-in for hsfs.feature.Feature: only the .name/.type attrs _conform_to_schema reads."""
+
+    def __init__(self, name: str, type: str) -> None:  # noqa: A002 - matches real hsfs attribute name
+        self.name = name
+        self.type = type
+
+
+_PANDAS_DTYPE_TO_HSFS_TYPE: dict[str, str] = {
+    "int64": "bigint",
+    "int32": "int",
+    "float64": "double",
+    "float32": "float",
+    "bool": "boolean",
+    "object": "string",
+}
+
+
+def _infer_hsfs_type(series: pd.Series) -> str:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "timestamp"
+    return _PANDAS_DTYPE_TO_HSFS_TYPE.get(str(series.dtype), "string")
+
+
 class FakeFeatureGroup:
     """In-memory stand-in for one Hopsworks FeatureGroup.
 
     Upserts by primary_key + event_time, matching how Hopsworks complements the
     primary key with the event-time column for offline/Hudi uniqueness when
-    time-travel is enabled (the default).
+    time-travel is enabled (the default). Schema (self.columns) is fixed from the
+    first insert's dtypes, matching how a real Hopsworks feature group locks in its
+    column types on creation -- letting fakes catch the same schema-drift bugs a real
+    later insert would.
     """
 
     def __init__(self, name: str, primary_key: list[str], event_time: str) -> None:
         self.name = name
         self._key_columns = [*primary_key, event_time]
         self._frame: pd.DataFrame | None = None
+        self.columns: list[_FakeColumn] = []
 
     def insert(self, frame: pd.DataFrame, **kwargs: Any) -> None:
+        if self._frame is None:
+            self.columns = [_FakeColumn(name=col, type=_infer_hsfs_type(frame[col])) for col in frame.columns]
+        else:
+            # Mirror real hsfs's _verify_schema_compatibility: an insert whose dtypes
+            # don't match the already-registered schema must fail loudly, not silently
+            # promote/concatenate mismatched types.
+            registered = {column.name: column.type for column in self.columns}
+            for col in frame.columns:
+                expected = registered.get(col)
+                actual = _infer_hsfs_type(frame[col])
+                if expected is not None and expected != actual:
+                    raise ValueError(
+                        f"{col} (expected type: '{expected}', derived from input: '{actual}') has the wrong type."
+                    )
         combined = frame.copy() if self._frame is None else pd.concat([self._frame, frame], ignore_index=True)
         combined = combined.sort_values(self._key_columns).drop_duplicates(subset=self._key_columns, keep="last")
         self._frame = combined.reset_index(drop=True)
@@ -231,3 +273,38 @@ def test_verify_feature_group_reports_duplicates_without_crashing() -> None:
 def test_load_feature_view_raises_when_not_created_yet(fake_feature_store: FakeFeatureStore) -> None:
     with pytest.raises(OpenMeteoClientError, match="does not exist yet"):
         load_feature_view()
+
+
+def test_insert_conforms_to_already_registered_schema_on_dtype_disagreement(
+    fake_feature_store: FakeFeatureStore,
+) -> None:
+    """A real, live production failure: a feature group locks its column types in from
+    whatever pandas inferred on the FIRST insert, per-column, independently. A whole-
+    history backfill can produce a mixed schema (e.g. a column that never once had a
+    fractional/null value across ~4 years infers as int, while one that did somewhere
+    infers as float) -- and a later incremental insert's own pandas inference depends
+    on that batch's actual values, so it can disagree in either direction. Without
+    conforming to the registered schema first, insert_features raises exactly the
+    FeatureStoreException seen live (fixed in store.py::_conform_to_schema).
+    """
+    raw = _load_raw_frame().iloc[96:200].reset_index(drop=True)
+    features = build_features(raw)
+
+    # Establish a mixed schema: force one column to look permanently int-typed (as
+    # relative_humidity_2m did from the real backfill) and leave us_aqi as float.
+    schema_setting_batch = features.iloc[:10].copy()
+    schema_setting_batch["relative_humidity_2m"] = schema_setting_batch["relative_humidity_2m"].round().astype("int64")
+    insert_features(schema_setting_batch)
+
+    # A later incremental batch with the opposite dtype disagreement in both
+    # directions: relative_humidity_2m now has a genuine fraction (float), and
+    # us_aqi happens to be all whole numbers this batch (int) -- both would raise
+    # against the schema fixed above without conforming first.
+    later_batch = features.iloc[10:20].copy()
+    later_batch["relative_humidity_2m"] = later_batch["relative_humidity_2m"].astype("float64") + 0.5
+    later_batch["us_aqi"] = later_batch["us_aqi"].round().astype("int64")
+
+    stored = insert_features(later_batch)
+
+    assert len(stored) == 20
+    assert not stored.duplicated(subset=FEATURES_PRIMARY_KEYS).any()
