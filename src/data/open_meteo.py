@@ -148,6 +148,14 @@ def _hourly_payload_to_frame(
         raise OpenMeteoClientError(f"Open-Meteo hourly payload missing columns: {missing_columns}")
 
     frame = pd.DataFrame({column: hourly[column] for column in required_columns})
+    # Open-Meteo returns whole-number fields (e.g. us_aqi, an integer AQI index by
+    # convention) as JSON ints when a given window has no fractional/null values,
+    # which pandas then infers as int64 -- while the same column from a wider
+    # historical fetch (more likely to include a null or a fractional reading
+    # somewhere) infers as float64. The Hopsworks feature group schema is fixed to
+    # 'double', so an incremental fetch that happens to be all-integers breaks the
+    # write. Force a stable dtype regardless of what a given response happens to contain.
+    frame[expected_columns] = frame[expected_columns].astype("float64")
     frame["event_time"] = pd.to_datetime(frame.pop("time"), utc=True)
     frame["city_id"] = city.city_id
     frame["latitude"] = city.latitude

@@ -63,6 +63,29 @@ def test_fetch_weather_expected_columns(mock_get: Mock) -> None:
 
 
 @patch("src.data.open_meteo.requests.get")
+def test_all_integer_response_still_yields_stable_float_columns(mock_get: Mock) -> None:
+    """A live window with no fractional/null values must not change the dtype Hopsworks sees.
+
+    us_aqi is a whole-number index by convention, so a short live fetch with no
+    fractional or null readings makes pandas infer int64 unless it's forced -- while a
+    wider historical fetch (more likely to include a null or fraction somewhere)
+    infers float64. The Hopsworks feature group schema is fixed to 'double', so this
+    divergence broke the live hourly refresh (a real production failure, not a test).
+    """
+    payload = {
+        "hourly": {
+            "time": ["2026-08-20T00:00", "2026-08-20T01:00"],
+            **{column: [87, 92] for column in AIR_QUALITY_HOURLY_FIELDS},
+        }
+    }
+    mock_get.return_value = _mock_response(payload)
+    frame = fetch_air_quality("2026-08-20", "2026-08-21")
+
+    for column in AIR_QUALITY_HOURLY_FIELDS:
+        assert frame[column].dtype == "float64", f"{column} must be float64 even with all-integer input"
+
+
+@patch("src.data.open_meteo.requests.get")
 def test_weather_join_produces_no_row_explosion(mock_get: Mock) -> None:
     mock_get.side_effect = [
         _mock_response(_hourly_payload(AIR_QUALITY_HOURLY_FIELDS)),
