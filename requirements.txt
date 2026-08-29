@@ -3,8 +3,9 @@ numpy>=1.26
 requests>=2.31
 scikit-learn>=1.3
 tensorflow>=2.13
-hopsworks>=3.7
+hopsworks==5.0.6  # pinned exactly: ADR-011 documents version-specific behavior (HUDI format, statistics_config, Kafka timeout, join semantics); leaving this unpinned lets a routine `pip install` resolve a different build with different bugs
 confluent-kafka<=2.3.0  # hsfs's Python engine buffers feature-group writes through Kafka; not always pulled in transitively
+nest_asyncio  # hsfs imports this unconditionally at module load but some hopsworks builds don't declare it as a dependency
 shap>=0.43
 matplotlib>=3.8
 fastapi>=0.104
