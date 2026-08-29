@@ -1,6 +1,6 @@
 # Pearls AQI Predictor — Final Report
 
-**City:** Lahore, Pakistan (31.5497, 74.3436) · **Period:** 10-day build + feature-store swap · **Status:** MVP complete, hosting and automation deferred (see §19)
+**City:** Lahore, Pakistan (31.5497, 74.3436) · **Period:** 10-day build + feature-store swap + automation · **Status:** MVP complete, public hosting is the only remaining gap (see §19)
 
 ---
 
@@ -10,7 +10,7 @@ This project builds a reproducible, serverless air-quality forecasting system fo
 
 The registered champion — a Ridge regression model — reduces mean absolute error by **25.9% relative to a persistence baseline** (16.83 vs. 22.70 AQI points, averaged across the three forecast horizons), a result consistent with the target's known heavy autocorrelation and squarely inside the 20–40% realistic range set out in the project's own methodology, rather than an implausibly large "80% improvement" that would suggest leakage.
 
-The one open piece is infrastructure, not modelling: both the Model Registry and the Feature Store are now genuinely live on Hopsworks; hourly/daily automation and public hosting were deliberately deferred rather than built on a shaky foundation. Both are scoped, now fully unblocked, and ready to complete once time permits (§19, §22).
+The one open piece is infrastructure, not modelling: the Model Registry, the Feature Store, and hourly/daily automation are all genuinely live on Hopsworks and GitHub Actions, verified with real dispatches against production, not just green offline tests. Public hosting is the only piece still deferred, and it's fully unblocked (§19, §22).
 
 ## 2. Business problem
 
@@ -151,7 +151,9 @@ Getting here required diagnosing and fixing four real issues, none of which were
 
 ## 15. Automated pipelines
 
-**Status: CI only.** `.github/workflows/ci.yml` runs `ruff` + the full 68-test suite (mocking all external services, including in-memory fake Hopsworks clients for both the Feature Store and the Model Registry — no credentials needed) on every push and PR to `main`, and is currently green. `hourly_features.yml` and `daily_training.yml` (per `ARCHITECTURE.md`'s design) are not yet built. They no longer have an infrastructure blocker — the Feature Store swap (§13) means state now persists across GitHub Actions' inherently ephemeral runners — this is simply not-yet-built scope.
+**Status: live, verified with real dispatches, not just green offline tests.** `.github/workflows/ci.yml` runs `ruff` + the full 76-test suite (mocking all external services, including in-memory fake Hopsworks clients for both the Feature Store and the Model Registry — no credentials needed) on every push and PR to `main`. `hourly_features.yml` (cron `17 * * * *`) and `daily_training.yml` (cron `37 3 * * *`), both with `workflow_dispatch`, have each had a real successful dispatch against the live project: the hourly job grew `aqi_features_v1`/`aqi_targets_v1` by 45 rows each (0 duplicates), and the daily job registered a new Model Registry version, with the promote-vs-incumbent decision logic (`ADR-009`) correctly evaluating it live.
+
+First live dispatch failed twice before succeeding — both failures were real bugs invisible to any offline test, because the offline fakes don't reproduce what a live Hopsworks feature-group schema or a live Open-Meteo response actually look like. Full detail in `ADR-012`: a missing transitive dependency (`nest_asyncio`), and a feature-group schema mismatch that broke in *both* directions depending on which columns a given live fetch happened to contain fractional values for that hour. The fix conforms every insert to the feature group's actual live-registered schema rather than guessing a dtype at the ingestion layer.
 
 ## 16. FastAPI
 
@@ -167,8 +169,8 @@ One page: header (city, last data update, last training time, champion version),
 
 ## 19. Limitations
 
-- **No automated hourly/daily refresh.** Features and the champion model reflect whenever `backfill.py`/`train.py` were last run manually. No longer infrastructure-blocked (§13, §15) — just not yet built.
-- **Not publicly hosted.** No live URL exists yet for the API or dashboard.
+- **Not publicly hosted.** No live URL exists yet for the API or dashboard — this is now the only remaining gap between the current system and the full contract objective.
+- **The hourly refresh only inserts rows newer than the latest stored `event_time`.** If Open-Meteo later revises an already-seen historical reading, this pipeline won't replay and re-upsert it automatically.
 - **CAMS coverage for this region is 3-hourly, interpolated to hourly** by the data provider — a real resolution limit, not an artifact of this project's processing.
 - **Weather-forecast features are excluded from v1 by design** (`ADR-006`) to avoid training/serving skew that would otherwise inflate validation numbers without a genuine accuracy gain.
 - **Single city.** Multi-city support is explicitly out of scope for v1 per the contract.
@@ -184,8 +186,8 @@ The forecast is designed to feed operational decisions via a `DATA → FORECAST 
 
 ## 22. Future improvements
 
-In priority order: (1) hourly/daily automation (`hourly_features.yml`, `daily_training.yml`) now that both Hopsworks stores are live; (2) public hosting (Streamlit Community Cloud + Hugging Face Spaces per `ADR-007`); (3) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (4) multi-city support, after the single-city path is fully automated; (5) prediction uncertainty intervals; (6) drift detection comparing live prediction error against the registered validation metrics over time; (7) OpenAQ ground-sensor cross-validation as an independent data-quality check.
+In priority order: (1) public hosting (Streamlit Community Cloud + Hugging Face Spaces per `ADR-007`) — the only remaining gap; (2) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (3) multi-city support, now that the single-city path is fully automated; (4) prediction uncertainty intervals; (5) drift detection comparing live prediction error against the registered validation metrics over time; (6) OpenAQ ground-sensor cross-validation as an independent data-quality check; (7) revision-aware hourly refresh (§19) so a later Open-Meteo correction to an already-seen reading gets replayed, not permanently missed.
 
 ## 23. Conclusion
 
-The core data-science claim of this project is real and defensible: a Ridge regression champion, selected by disciplined time-aware validation rather than a single lucky test split, reduces forecast error by 25.9% relative to a persistence baseline — a result that sits exactly where the project's own methodology predicted a genuine, non-leaked model should land. Getting that result required real engineering discipline along the way: catching a contract-violating feature set after the fact and re-verifying the fix changed almost nothing (§8), catching that a single-split evaluation would have made an unstable neural network look competitive (§9, §11), diagnosing four separate, non-obvious integration bugs to get a genuinely live Hopsworks Model Registry (§14, `ADR-010`), and diagnosing six more to get a genuinely live Feature Store without reintroducing the exact leakage this project spent Day 2 guarding against (§13, `ADR-011`). What remains — automation and public hosting — is well-scoped, not blocked on anything unresolved, and is the natural next increment on top of a foundation that is already correct.
+The core data-science claim of this project is real and defensible: a Ridge regression champion, selected by disciplined time-aware validation rather than a single lucky test split, reduces forecast error by 25.9% relative to a persistence baseline — a result that sits exactly where the project's own methodology predicted a genuine, non-leaked model should land. Getting that result required real engineering discipline along the way: catching a contract-violating feature set after the fact and re-verifying the fix changed almost nothing (§8), catching that a single-split evaluation would have made an unstable neural network look competitive (§9, §11), diagnosing four separate, non-obvious integration bugs to get a genuinely live Hopsworks Model Registry (§14, `ADR-010`), diagnosing six more to get a genuinely live Feature Store without reintroducing the exact leakage this project spent Day 2 guarding against (§13, `ADR-011`), and diagnosing three more getting the hourly/daily automation to survive a real live dispatch rather than just an offline-green checkmark (§15, `ADR-012`). What remains — public hosting — is well-scoped, not blocked on anything unresolved, and is the natural next increment on top of a foundation that is already correct.

@@ -123,6 +123,7 @@ The suite mocks all external services, including Open-Meteo HTTP calls and Hopsw
 - [`.github/workflows/hourly_features.yml`](.github/workflows/hourly_features.yml) runs hourly at minute `17` and supports `workflow_dispatch`.
 - [`.github/workflows/daily_training.yml`](.github/workflows/daily_training.yml) runs daily at `03:37` UTC and supports `workflow_dispatch`.
 - Both workflows require `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` GitHub repository secrets.
+- Both are verified live, not just offline-tested: a real dispatch grew the Feature Store by 45 rows per group and registered a new Model Registry version. See `ADR-012` for the three real bugs (a missing transitive dependency, and a Hopsworks feature-group schema mismatch in both directions) that first live dispatch surfaced and fixed.
 
 ## Deployment
 

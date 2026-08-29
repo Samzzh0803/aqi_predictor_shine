@@ -183,7 +183,27 @@ Full historical backfill (2022-08-01 → today) run against the live project. Da
 
 ---
 
-## ADR-012 - [template]
+## ADR-012 - Day 8 automation: three real bugs found on first live dispatch
+
+**Status:** Accepted on 2026-08-30.
+
+**Context.** `hourly_features.yml` and `daily_training.yml` (Day 8's hourly refresh and daily training/promotion automation, implemented by Codex, reviewed by Claude) were code-complete and green offline, but had never been dispatched against real GitHub Actions or a live Hopsworks write path. First live dispatch failed twice in a row, then succeeded once fixed. Neither failure was visible in any offline test, because the offline fakes don't reproduce what a live Hopsworks schema or a live Open-Meteo API response actually look like — a real gap in the fakes, not just the code they were testing.
+
+**Decision.**
+
+1. **`ModuleNotFoundError: No module named 'nest_asyncio'`.** `hsfs` imports it unconditionally at module load but the `hopsworks` build CI's `pip install -r requirements.txt` resolved didn't declare it as a dependency — the same class of packaging gap `ADR-011` already found with `confluent-kafka`. Fixed by pinning `hopsworks==5.0.6` exactly (was `>=3.7`) and adding `nest_asyncio` directly to `requirements.txt`. The exact pin matters here specifically because `ADR-011` already documents a pile of version-5.0.6-specific behavior this project depends on; leaving the version unconstrained lets a routine install silently resolve a different build with different undeclared-dependency bugs.
+2. **`us_aqi` schema mismatch** (`expected type: 'double', derived from input: 'bigint'`). A live incremental fetch happened to contain no fractional or null `us_aqi` readings that hour, so pandas inferred `int64` — disagreeing with the `float64` the original historical backfill had locked into the Hopsworks feature group schema. First attempt fixed this by forcing `float64` on every Open-Meteo numeric field in `src/data/open_meteo.py::_hourly_payload_to_frame`. That fix was real but incomplete.
+3. **The same class of bug in the opposite direction.** The second live dispatch (after fix #2) failed on `relative_humidity_2m`, `cloud_cover`, and `wind_direction_10m` — all three *expected* `bigint`, not `double`. Across the whole ~4-year backfill, those three columns apparently never once had a fractional or null value, so Hopsworks locked their schema in as integer. Forcing them to float broke them. There is no single "correct" dtype to force at the ingestion layer — each column's registered type is just whatever pandas happened to infer on that feature group's first-ever insert, independently per column, and that's effectively arbitrary.
+
+   The actual fix: `src/feature_store/store.py::_conform_to_schema` reads the feature group's real, live schema (`fg.columns`, an hsfs API call) and casts every subsequent insert to match it column-by-column, in whichever direction is needed. For a brand-new feature group with no schema registered yet, this is a no-op — the first insert's own dtypes define the schema, exactly as before. Verified directly against the live `aqi_features_v1` schema (not just the offline fake) before pushing: a synthetic frame reproducing the exact failure conforms to `bigint`/`bigint`/`bigint`/`double` respectively, matching what's actually registered, with `event_time` left untouched.
+
+   `tests/test_feature_store.py`'s `FakeFeatureGroup` previously tolerated any dtype mix silently (a real gap — it's why this class of bug reached production instead of CI). It now enforces schema compatibility the way real hsfs does, raising on a mismatch exactly as Hopsworks would, and its schema inference correctly recognizes datetime columns as `timestamp` rather than defaulting them to `string` (an intermediate version of this fix corrupted `event_time`'s timezone-awareness by round-tripping it through the wrong type — caught by the existing `_validate_frame` check before it reached a commit).
+
+**Consequence.** Both workflows now have a real, verified-live green dispatch on `main`: `hourly_features.yml` grew the Feature Store by 45 rows in each group (35,712→35,757 features, 35,545→35,590 targets, 0 duplicates); `daily_training.yml` registered Model Registry version 2, with `_should_promote_candidate` correctly evaluating it against the incumbent. The Day 8 gate is met for real, not just offline-green. `src/data/open_meteo.py`'s `float64` cast (fix #2) is kept, not reverted — it's still correct and useful for the case where a feature group's schema is being *defined* for the first time from a live fetch rather than a local parquet cache (e.g. a from-scratch backfill with no cached raw data); `_conform_to_schema` is the fix for every insert *after* that, which is the common case in steady-state operation.
+
+---
+
+## ADR-013 - [template]
 
 **Status:** Proposed / Accepted / Rejected
 **Context.**
