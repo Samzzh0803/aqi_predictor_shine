@@ -14,7 +14,7 @@ from typing import Any
 import joblib
 from tensorflow import keras
 
-from src.data.open_meteo import OpenMeteoClientError
+from src.data.open_meteo import OpenMeteoClientError, load_city_config
 
 MODEL_NAME = "pearls_aqi_forecaster"
 CERT_FOLDER = str(Path("data") / ".hopsworks_certs")
@@ -36,6 +36,7 @@ class RegisteredModelVersion:
     data_start: str
     data_end: str
     artifact_paths: dict[str, str]
+    city_id: str = ""
     backend: str = "hopsworks_model_registry"
 
 
@@ -67,6 +68,7 @@ def register_model_version(
             shutil.copyfile(source, version_dir / destination_filename)
             artifact_filenames[f"shap_{shap_name}"] = destination_filename
 
+        city_id = load_city_config().city_id
         numeric_metrics = {key: float(value) for key, value in metrics.items()}
         extra_metadata = {
             "model_type": model_type,
@@ -74,6 +76,7 @@ def register_model_version(
             "data_start": data_start,
             "data_end": data_end,
             "artifact_filenames": artifact_filenames,
+            "city_id": city_id,
         }
         # Hopsworks' `description` column has a short length limit that the full
         # metadata (feature list + artifact filenames) can exceed. Ship the full
@@ -97,15 +100,32 @@ def register_model_version(
         data_start=data_start,
         data_end=data_end,
         artifact_paths=artifact_filenames,
+        city_id=city_id,
     )
 
 
 def get_champion(model_name: str = MODEL_NAME) -> RegisteredModelVersion:
-    """Return the registered version with the best validation mean MAE."""
+    """Return the registered version with the best validation mean MAE, scoped to the configured city.
 
-    versions = list_registered_versions(model_name=model_name)
+    Registered versions carry the `city_id` they were trained on (see `register_model_version`).
+    A shared `model_name` can hold versions for multiple cities at once -- e.g. after a Lahore-era
+    registration and a later Karachi backfill both write into the same `pearls_aqi_forecaster` name.
+    Without this filter, `min()` would pick whichever city's MAE happens to be numerically lower,
+    silently serving one city's forecasts from a model trained on another city's data. Versions
+    registered before city tagging existed carry no `city_id` and are treated as not matching any
+    configured city, rather than guessed at.
+    """
+
+    configured_city_id = load_city_config().city_id
+    versions = [
+        version
+        for version in list_registered_versions(model_name=model_name)
+        if version.city_id == configured_city_id
+    ]
     if not versions:
-        raise OpenMeteoClientError(f"No registered models found for {model_name}")
+        raise OpenMeteoClientError(
+            f"No registered models found for {model_name} and city '{configured_city_id}'"
+        )
     return min(
         versions,
         key=lambda item: (
@@ -140,6 +160,7 @@ def list_registered_versions(model_name: str = MODEL_NAME) -> list[RegisteredMod
                 data_start=extra_metadata.get("data_start", ""),
                 data_end=extra_metadata.get("data_end", ""),
                 artifact_paths=extra_metadata.get("artifact_filenames", {}),
+                city_id=extra_metadata.get("city_id", ""),
             )
         )
     return versions

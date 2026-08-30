@@ -37,7 +37,7 @@ def _hourly_payload(columns: list[str]) -> dict:
 
 def test_load_city_config_reads_repo_default() -> None:
     city = load_city_config()
-    assert city.city_id == "lahore"
+    assert city.city_id == "karachi"
     assert city.timezone == "Asia/Karachi"
 
 

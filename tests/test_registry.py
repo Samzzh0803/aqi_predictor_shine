@@ -157,6 +157,76 @@ def test_register_model_version_attaches_shap_artifacts(
     assert "shap_target_aqi_day1_importance_csv" not in loaded
 
 
+def test_get_champion_ignores_lower_mae_version_from_a_different_city(
+    fake_registry: FakeModelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shared model_name can hold versions for multiple cities; champion selection must not
+    cross city boundaries just because one city's MAE happens to be numerically lower."""
+
+    def _city(city_id: str) -> object:
+        return type("City", (), {"city_id": city_id})()
+
+    monkeypatch.setattr(registry_module, "load_city_config", lambda: _city("lahore"))
+    lahore_version = register_model_version(
+        model_name="pearls_aqi_forecaster",
+        model_type="ridge",
+        fitted_models={"target_aqi_day1": Ridge()},
+        metrics={"mae_mean": 16.0, "selection_mae_mean": 16.0, "selection_mae_std": 1.0},
+        feature_list=["us_aqi"],
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-01-02T00:00:00+00:00",
+        shap_artifact_paths={},
+    )
+
+    monkeypatch.setattr(registry_module, "load_city_config", lambda: _city("karachi"))
+    karachi_version = register_model_version(
+        model_name="pearls_aqi_forecaster",
+        model_type="hist_gradient_boosting",
+        fitted_models={"target_aqi_day1": Ridge()},
+        metrics={"mae_mean": 7.0, "selection_mae_mean": 7.0, "selection_mae_std": 0.5},
+        feature_list=["us_aqi"],
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-01-02T00:00:00+00:00",
+        shap_artifact_paths={},
+    )
+
+    assert len(list_registered_versions("pearls_aqi_forecaster")) == 2
+
+    monkeypatch.setattr(registry_module, "load_city_config", lambda: _city("lahore"))
+    assert get_champion("pearls_aqi_forecaster").version == lahore_version.version
+
+    monkeypatch.setattr(registry_module, "load_city_config", lambda: _city("karachi"))
+    assert get_champion("pearls_aqi_forecaster").version == karachi_version.version
+
+
+def test_get_champion_raises_when_no_versions_match_configured_city(
+    fake_registry: FakeModelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.data.open_meteo import OpenMeteoClientError
+
+    monkeypatch.setattr(
+        registry_module, "load_city_config", lambda: type("City", (), {"city_id": "lahore"})()
+    )
+    register_model_version(
+        model_name="pearls_aqi_forecaster",
+        model_type="ridge",
+        fitted_models={"target_aqi_day1": Ridge()},
+        metrics={"mae_mean": 16.0, "selection_mae_mean": 16.0, "selection_mae_std": 1.0},
+        feature_list=["us_aqi"],
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-01-02T00:00:00+00:00",
+        shap_artifact_paths={},
+    )
+
+    monkeypatch.setattr(
+        registry_module, "load_city_config", lambda: type("City", (), {"city_id": "karachi"})()
+    )
+    with pytest.raises(OpenMeteoClientError):
+        get_champion("pearls_aqi_forecaster")
+
+
 def test_get_champion_raises_when_no_versions_registered(fake_registry: FakeModelRegistry) -> None:
     from src.data.open_meteo import OpenMeteoClientError
 

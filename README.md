@@ -2,7 +2,7 @@
 
 A reproducible, serverless AQI forecasting system for one configurable city. It ingests hourly weather and air-quality data, builds leakage-free time-series features, stores them in a Hopsworks-backed feature store, forecasts average US AQI for the next 24, 48, and 72 hours across four modeling approaches, registers the validation-selected champion in the Hopsworks Model Registry, serves predictions through FastAPI, and visualizes them in a Streamlit dashboard with SHAP explanations and alerts.
 
-Configured city: **Lahore, Pakistan** (31.5497, 74.3436).
+Configured city: **Karachi, Pakistan** (24.8608, 67.0104).
 
 ## What it does
 

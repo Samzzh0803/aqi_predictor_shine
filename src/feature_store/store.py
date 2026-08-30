@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Final
 
 import pandas as pd
 from pandas import DatetimeTZDtype
 
-from src.data.open_meteo import OpenMeteoClientError
+from src.data.open_meteo import OpenMeteoClientError, load_city_config
 from src.features.build_targets import TARGET_COLUMNS
+
+LOGGER = __import__("logging").getLogger(__name__)
 
 FEATURES_PRIMARY_KEYS: Final[list[str]] = ["city_id", "event_time"]
 TARGETS_PRIMARY_KEYS: Final[list[str]] = ["city_id", "event_time"]
@@ -189,12 +192,43 @@ def _conform_to_schema(frame: pd.DataFrame, fg: Any) -> pd.DataFrame:
 def _load(fg_name: str, key_columns: list[str]) -> pd.DataFrame:
     fs = _get_feature_store()
     fg = _get_feature_group(fs, fg_name)
-    frame = fg.read()
+    frame = _read_with_retry(fg=fg, fg_name=fg_name)
     if frame.empty:
         return frame
+    frame = _filter_to_configured_city(frame)
     frame = frame.sort_values(key_columns).reset_index(drop=True)
     _validate_frame(frame=frame, key_columns=key_columns)
     return frame
+
+
+def _read_with_retry(fg: Any, fg_name: str, attempts: int = 3, delay_seconds: int = 5) -> pd.DataFrame:
+    """Retry transient Hopsworks query-service read failures."""
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fg.read()
+        except Exception as exc:  # noqa: BLE001 - hsfs raises several wrapped exception types
+            last_error = exc
+            if attempt == attempts:
+                break
+            LOGGER.warning(
+                "Retrying feature-store read after transient query-service failure",
+                extra={"feature_group": fg_name, "attempt": attempt, "attempts": attempts},
+            )
+            time.sleep(delay_seconds)
+    raise last_error  # type: ignore[misc]
+
+
+def _filter_to_configured_city(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return only rows for the configured city from a multi-city feature group."""
+
+    if "city_id" not in frame.columns:
+        raise OpenMeteoClientError("Feature-store frame must include city_id")
+
+    configured_city_id = load_city_config().city_id
+    filtered = frame.loc[frame["city_id"] == configured_city_id].copy()
+    return filtered.reset_index(drop=True)
 
 
 def _get_feature_group(fs: Any, name: str, *, description: str = "") -> Any:

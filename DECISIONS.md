@@ -203,7 +203,21 @@ Full historical backfill (2022-08-01 → today) run against the live project. Da
 
 ---
 
-## ADR-013 - [template]
+## ADR-013 - Model Registry scoped by city_id after the Karachi switch exposed a champion-selection gap
+
+**Status:** Accepted on 2026-08-30.
+
+**Context.** The human directed a switch from Lahore to Karachi as the configured city (post-10, hosting session). Codex implemented the switch: `config/config.yaml`, city-scoped Feature Store reads (`src/feature_store/store.py::_filter_to_configured_city`), and a real live Karachi backfill + retrain. Reviewing that diff, `get_champion()` (`src/models/registry.py`) turned out to have no notion of city at all — `RegisteredModelVersion` carried no `city_id`, and champion selection was `min()` over every registered version's `mae_mean` regardless of which city trained it. This was invisible under the original single-city architecture (only one city's data ever existed in the registry) but became a real, live risk the moment two cities' data coexisted in the same `pearls_aqi_forecaster` model name: whichever city's MAE happened to be numerically lower would win the *entire system's* champion, silently serving the other city forecasts from a model trained on a different city's climate/pollution patterns. Confirmed live: the registry already held Lahore versions 1/2 (`ridge`, mae_mean ~16.8) alongside the new Karachi version 4 (`hist_gradient_boosting`, mae_mean ~7.8) — `get_champion()` happened to return the correct (Karachi) version only by coincidence of the numbers, not by design. This also affects `daily_training.yml`'s promote-only-if-better decision (`_should_promote_candidate` compares a candidate against `_safe_get_existing_champion()`), which would compare across cities the same way.
+
+**Decision.** Add `city_id` to `RegisteredModelVersion` and to the manifest `register_model_version()` uploads (captured from `load_city_config()` at registration time, mirroring `_filter_to_configured_city`'s pattern in the Feature Store fix). `get_champion()` now filters `list_registered_versions()` to the configured city before selecting the minimum-MAE version, raising `OpenMeteoClientError` if none match rather than falling back to an untagged or wrong-city version. Versions registered before this fix (1, 2, 4) carry no `city_id` and are therefore never selected going forward — not deleted, just permanently excluded from champion selection, since retroactively guessing their city from timestamps would be inventing metadata rather than reading it. Version 4's already-real, already-trained Karachi model was re-registered as version 5 (same fitted models, same metrics, same SHAP artifacts, downloaded and re-uploaded under the fixed code rather than retrained) to give the live system a validly-tagged Karachi champion immediately. Verified live: `get_champion()` now returns version 5 (`hist_gradient_boosting`, `city_id=karachi`, `mae_mean=7.81`) against the real Hopsworks project, not just an offline fake.
+
+**Consequence.** `tests/test_registry.py` adds `test_get_champion_ignores_lower_mae_version_from_a_different_city` (proves a numerically-lower-MAE version from another city is correctly skipped) and `test_get_champion_raises_when_no_versions_match_configured_city`. Any future city switch or multi-city expansion (contract's Day-9+ stretch item) now gets correct champion isolation for free, rather than needing this fix repeated. `list_registered_versions()` itself stays unfiltered (still useful for a full-registry view across cities); the city boundary is enforced specifically at `get_champion()`, the one function whose cross-city behavior is actually dangerous.
+
+**Owner + date.** Claude, 2026-08-30, found and fixed during review of Codex's Karachi city-switch ticket.
+
+---
+
+## ADR-014 - [template]
 
 **Status:** Proposed / Accepted / Rejected
 **Context.**

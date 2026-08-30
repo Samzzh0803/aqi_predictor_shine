@@ -32,6 +32,20 @@ from tests.test_feature_store import FakeFeatureStore
 def fake_feature_store(monkeypatch: pytest.MonkeyPatch) -> FakeFeatureStore:
     fs = FakeFeatureStore()
     monkeypatch.setattr(store_module, "_get_feature_store", lambda: fs)
+    monkeypatch.setattr(
+        "src.feature_store.store.load_city_config",
+        lambda: type(
+            "City",
+            (),
+            {
+                "city_id": "lahore",
+                "name": "Lahore",
+                "latitude": 31.5497,
+                "longitude": 74.3436,
+                "timezone": "Asia/Karachi",
+            },
+        )(),
+    )
     return fs
 
 

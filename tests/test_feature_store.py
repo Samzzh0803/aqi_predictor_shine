@@ -194,6 +194,20 @@ class FakeFeatureStore:
 def fake_feature_store(monkeypatch: pytest.MonkeyPatch) -> FakeFeatureStore:
     fs = FakeFeatureStore()
     monkeypatch.setattr(store_module, "_get_feature_store", lambda: fs)
+    monkeypatch.setattr(
+        "src.feature_store.store.load_city_config",
+        lambda: type(
+            "City",
+            (),
+            {
+                "city_id": "lahore",
+                "name": "Lahore",
+                "latitude": 31.5497,
+                "longitude": 74.3436,
+                "timezone": "Asia/Karachi",
+            },
+        )(),
+    )
     return fs
 
 
@@ -273,6 +287,46 @@ def test_verify_feature_group_reports_duplicates_without_crashing() -> None:
 def test_load_feature_view_raises_when_not_created_yet(fake_feature_store: FakeFeatureStore) -> None:
     with pytest.raises(OpenMeteoClientError, match="does not exist yet"):
         load_feature_view()
+
+
+def test_load_functions_filter_to_configured_city(
+    fake_feature_store: FakeFeatureStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _load_raw_frame().iloc[96:240].reset_index(drop=True)
+    karachi_raw = raw.copy()
+    karachi_raw["city_id"] = "karachi"
+    karachi_raw["latitude"] = 24.8608
+    karachi_raw["longitude"] = 67.0104
+
+    features = pd.concat([build_features(raw), build_features(karachi_raw)], ignore_index=True)
+    targets = pd.concat([build_targets(raw), build_targets(karachi_raw)], ignore_index=True)
+
+    monkeypatch.setattr(
+        "src.feature_store.store.load_city_config",
+        lambda: type(
+            "City",
+            (),
+            {
+                "city_id": "karachi",
+                "name": "Karachi",
+                "latitude": 24.8608,
+                "longitude": 67.0104,
+                "timezone": "Asia/Karachi",
+            },
+        )(),
+    )
+
+    insert_features(features)
+    insert_targets(targets)
+
+    filtered_features = load_features()
+    filtered_targets = load_targets()
+
+    assert not filtered_features.empty
+    assert not filtered_targets.empty
+    assert set(filtered_features["city_id"]) == {"karachi"}
+    assert set(filtered_targets["city_id"]) == {"karachi"}
 
 
 def test_insert_conforms_to_already_registered_schema_on_dtype_disagreement(

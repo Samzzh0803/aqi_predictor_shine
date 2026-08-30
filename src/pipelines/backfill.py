@@ -1,4 +1,4 @@
-"""Day 3 backfill pipeline for local Parquet feature-store fallback."""
+"""Day 3 backfill pipeline for the configured city's raw history and feature-store sync."""
 
 from __future__ import annotations
 
@@ -108,22 +108,22 @@ def _load_or_fetch_raw_frame(
     end_ts = pd.Timestamp(end_date, tz="UTC") + pd.Timedelta(days=1) - pd.Timedelta(
         microseconds=1
     )
+    city = load_city_config()
 
     if source_frame is not None:
         frame = source_frame.copy()
     elif raw_cache_path is not None and raw_cache_path.exists():
         frame = pd.read_parquet(raw_cache_path)
+        if not _cache_matches_city(frame, city):
+            LOGGER.warning(
+                "Ignoring raw cache for a different city configuration",
+                extra={"raw_cache_path": str(raw_cache_path), "configured_city_id": city.city_id},
+            )
+            frame = _fetch_raw_frame(start_date=start_date, end_date=end_date, city=city)
+            raw_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            frame.to_parquet(raw_cache_path, index=False)
     else:
-        city = load_city_config()
-        try:
-            air_quality = fetch_air_quality(start=start_date, end=end_date, city=city)
-        except OpenMeteoClientError as exc:
-            raise OpenMeteoClientError(f"Backfill failed while fetching air quality: {exc}") from exc
-        try:
-            weather = fetch_weather(start=start_date, end=end_date, city=city)
-        except OpenMeteoClientError as exc:
-            raise OpenMeteoClientError(f"Backfill failed while fetching weather: {exc}") from exc
-        frame = merge_air_quality_and_weather(air_quality, weather)
+        frame = _fetch_raw_frame(start_date=start_date, end_date=end_date, city=city)
 
         if raw_cache_path is not None:
             raw_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,11 +139,32 @@ def _load_or_fetch_raw_frame(
     return frame
 
 
+def _fetch_raw_frame(start_date: str, end_date: str, city: object) -> pd.DataFrame:
+    try:
+        air_quality = fetch_air_quality(start=start_date, end=end_date, city=city)
+    except OpenMeteoClientError as exc:
+        raise OpenMeteoClientError(f"Backfill failed while fetching air quality: {exc}") from exc
+    try:
+        weather = fetch_weather(start=start_date, end=end_date, city=city)
+    except OpenMeteoClientError as exc:
+        raise OpenMeteoClientError(f"Backfill failed while fetching weather: {exc}") from exc
+    return merge_air_quality_and_weather(air_quality, weather)
+
+
+def _cache_matches_city(frame: pd.DataFrame, city: object) -> bool:
+    if frame.empty or "city_id" not in frame.columns:
+        return False
+    return bool((frame["city_id"] == city.city_id).all())
+
+
 if __name__ == "__main__":
     DEFAULT_START_DATE = "2022-08-01"
     DEFAULT_END_DATE = pd.Timestamp.utcnow().date().isoformat()
-    raw_cache_candidates = sorted(Path("data/raw").glob("aqi_weather_*.parquet"))
-    default_raw_cache = raw_cache_candidates[-1] if raw_cache_candidates else None
+    configured_city = load_city_config()
+    default_raw_cache = (
+        Path("data/raw")
+        / f"aqi_weather_{configured_city.city_id}_{DEFAULT_START_DATE}_{DEFAULT_END_DATE}.parquet"
+    )
 
     artifacts = run_backfill(
         start_date=DEFAULT_START_DATE,

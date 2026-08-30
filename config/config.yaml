@@ -1,9 +1,9 @@
 {
   "city": {
-    "id": "lahore",
-    "name": "Lahore",
-    "latitude": 31.5497,
-    "longitude": 74.3436,
+    "id": "karachi",
+    "name": "Karachi",
+    "latitude": 24.8608,
+    "longitude": 67.0104,
     "timezone": "Asia/Karachi"
   }
 }

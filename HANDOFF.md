@@ -6,46 +6,45 @@ Overwrite the block below at the end of **every** agent session. Keep only the c
 
 ## CURRENT STATE
 
-**Day:** Post-10, hosting package prepared. Feature Store, Model Registry, hourly refresh, and daily training/promotion are all genuinely live on real infrastructure. Deployment files and manual cloud setup instructions now exist for the API and dashboard. Remaining gap is creating the actual public deployments and filling in their URLs.
-**Last updated:** 2026-08-30 by Codex
+**Day:** Post-10, Karachi city-switch complete and verified live, including a Model Registry gap Codex's ticket didn't cover. Live Hopsworks now holds both Lahore and Karachi cleanly (feature groups correctly filtered per read; model registry now correctly scoped per city too). `dashboard/app.py`'s separate redesign ticket is done but not yet reviewed or committed.
+**Last updated:** 2026-08-30 by Claude (reviewing/fixing Codex's Karachi ticket)
 
 **What happened this session**
-- Added `docker/Dockerfile.api` for Hugging Face Spaces' Docker SDK. It installs from the existing `requirements.txt` unchanged, copies only `src/` plus `config/`, and runs `uvicorn src.api.main:app --host 0.0.0.0 --port 7860`.
-- Added `.dockerignore` excluding `data/`, `notebooks/`, `.venv/`, `tests/`, `docs/`, and `.git/` so the API image stays small and does not ship local caches or development-only content.
-- Updated `.env.example` to include `API_BASE_URL`, since the Streamlit deployment needs it even though it is not a secret.
-- Updated `README.md` Deployment and Known Limitations sections with placeholder public URLs, Docker build/run commands, and manual Hugging Face Spaces plus Streamlit Community Cloud setup steps.
-- Updated `docs/REPORT.md` section 18 to reflect that hosting is now packaging/configuration work rather than an unresolved architecture blocker.
-- Could not perform the requested local Docker verification here because this environment does not have the `docker` CLI installed. The commands are documented exactly, but the build/run smoke test still needs to be executed on a Docker-enabled machine.
+- Reviewed Codex's Karachi city-switch diff (`config/config.yaml`, `src/feature_store/store.py`, `src/pipelines/backfill.py`, tests). Verified directly against live Hopsworks rather than trusting the self-report: `aqi_features_v1` genuinely holds 35,784 Karachi rows + 35,760 Lahore rows, and `_filter_to_configured_city` correctly isolates them.
+- Found and fixed one test file Codex missed monkeypatching (`tests/test_hourly_features.py`'s `fake_feature_store` fixture) — it was silently reading the real, now-Karachi `config.yaml` against Lahore-era fixture data, failing with "Feature store is empty."
+- **Found and fixed a real live-production bug outside the ticket's scope:** `src/models/registry.py`'s `get_champion()` had no city scoping at all — it picked the lowest MAE across *every* registered version regardless of which city trained it. With both cities' data now live, this meant the system could silently serve one city's forecast from a model trained on the other city's climate/pollution patterns the next time either city's daily training job registered a new version. Fixed by stamping `city_id` into the registration manifest (`register_model_version`) and filtering champion selection by the configured city (`get_champion`). Covered by two new tests (`test_get_champion_ignores_lower_mae_version_from_a_different_city`, `test_get_champion_raises_when_no_versions_match_configured_city`).
+- Re-registered the live Karachi champion as version `5` (`hist_gradient_boosting`, `city_id=karachi`, `mae_mean=7.81`) by downloading and re-uploading the already-real, already-trained version `4` artifacts under the fixed code — no retraining, no synthetic data. Verified `get_champion()` now returns it correctly against live Hopsworks. Versions 1/2/4 remain in the registry untagged (pre-fix) and are now correctly never selected.
+- Corrected `data5_summary.json`'s champion metadata reference in this file (previous entry said "champion `ridge`, version `1`" — actually `hist_gradient_boosting`, and now live as version `5`).
 
 **How to verify**
 ```bash
-docker build -f docker/Dockerfile.api -t pearls-aqi-api .
-docker run --rm -p 7860:7860 -e HOPSWORKS_API_KEY=... -e HOPSWORKS_PROJECT=... pearls-aqi-api
-curl http://127.0.0.1:7860/health
-curl http://127.0.0.1:7860/forecast
+.venv\Scripts\python.exe -m pytest tests/ -q
+.venv\Scripts\python.exe -m ruff check src tests dashboard
 ```
-Then create the Streamlit Community Cloud app with `dashboard/app.py` as the entrypoint, Python 3.11, `API_BASE_URL=<hugging-face-space-url>`, and the same Hopsworks secrets in the app settings UI.
+79/79 tests pass, ruff clean. To verify the live registry fix directly:
+```python
+from dotenv import load_dotenv; load_dotenv()
+from src.models import registry
+print(registry.get_champion().version, registry.get_champion().city_id)  # -> 5 karachi
+```
 
 **Current blockers / follow-up**
-1. The actual Hugging Face Space and Streamlit Community Cloud app still need to be created manually; no public URLs exist yet.
-2. Local Docker smoke testing is still outstanding because the current environment lacks Docker.
-3. On a fresh Windows dev machine, `pip install -r requirements.txt` can still hit the `twofish` build failure unless a compiler is available - see `ADR-011` for the local workaround.
+1. The deployed Render API and Streamlit dashboard still need to be redeployed/restarted so the public URLs stop serving Lahore and start serving Karachi.
+2. `hourly_features.yml` / `daily_training.yml` haven't been dispatched against the Karachi configuration yet — do this after redeploy, and confirm the daily job's promotion logic now correctly compares only Karachi-tagged versions.
+3. `dashboard/app.py`'s visual redesign ticket (see `TASKS.md`) is implemented on disk but uncommitted and unreviewed — separate from this ticket, needs its own review pass before merging.
 
 **Next task**
-- Create the Hugging Face Docker Space, add `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` as Space secrets, deploy the API on port 7860, then create the Streamlit Community Cloud app pointing `API_BASE_URL` at the Space URL.
+- Redeploy the live API/dashboard to pick up the Karachi config and the registry fix, then dispatch `hourly_features.yml` and `daily_training.yml` once each and confirm the public `/forecast` response is Karachi-backed. Review and commit the dashboard redesign separately.
 
-**Gate (Hosting):** PARTIAL. Deployment files and instructions are ready; actual public cloud deployments and Docker smoke verification still need to be completed outside this environment.
+**Gate (Karachi switch):** PASS for repo state, live backfill, and live Model Registry/Feature Store correctness. Still PARTIAL on public redeploy + post-switch workflow dispatch — those remain outside this environment.
 
 ---
 
 ## PREVIOUS ENTRIES
 
+### 2026-08-30 - Codex (Karachi city-switch implementation)
+- Switched `config/config.yaml` to Karachi, added city-scoped Feature Store reads and stale-cache rejection in `backfill.py`, ran a real live Karachi backfill (35,784 rows) and retrain (champion `hist_gradient_boosting`, mae_mean 7.81). See the current-state entry above for the review/fix pass that followed in the same day.
+
 ### 2026-08-30 - Claude (automation live verification)
 - Reviewed Codex's Day 8 automation diff, hand-verified the `>=72h` target-backfill boundary, added the missing promote-when-better test, and pushed the automation work.
 - Live dispatch surfaced three real bugs (`nest_asyncio`, live schema mismatch in both directions); both workflows were then dispatched successfully against the live Hopsworks project, growing the Feature Store and registering Model Registry version 2. See `ADR-012`.
-
-### 2026-08-29 - Codex (Day 8, hourly/daily automation authored)
-- Added `src/pipelines/hourly_features.py` and `run_daily_training_job()`; added both workflow YAMLs and offline tests. Code-complete and offline-tested before the later live dispatch/review.
-
-### 2026-08-29 - Claude (Feature Store swap to live Hopsworks)
-- Swapped `src/feature_store/store.py` from the Day 3 local-Parquet fallback to real Hopsworks. Six real issues fixed getting an unmocked run working - see `ADR-011`. Full historical backfill run live (35,712 / 35,545 rows), Day 3 gate re-verified from Hopsworks alone.

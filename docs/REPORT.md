@@ -1,6 +1,6 @@
 # Pearls AQI Predictor — Final Report
 
-**City:** Lahore, Pakistan (31.5497, 74.3436) · **Period:** 10-day build + feature-store swap + automation · **Status:** MVP complete, public hosting is the only remaining gap (see §19)
+**City:** Karachi, Pakistan (24.8608, 67.0104) · **Period:** 10-day build + feature-store swap + automation · **Status:** MVP complete, public hosting is the only remaining gap (see §19)
 
 ---
 
