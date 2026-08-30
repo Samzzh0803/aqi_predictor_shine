@@ -56,6 +56,36 @@ def _infer_hsfs_type(series: pd.Series) -> str:
     return _PANDAS_DTYPE_TO_HSFS_TYPE.get(str(series.dtype), "string")
 
 
+class _FakeFeature:
+    """Stand-in for hsfs's dynamic column-attribute access (e.g. `fg.city_id == "karachi"`)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __eq__(self, other: Any) -> _FakeFilterCondition:  # type: ignore[override]
+        return _FakeFilterCondition(self.name, other)
+
+
+class _FakeFilterCondition:
+    def __init__(self, column: str, value: Any) -> None:
+        self.column = column
+        self.value = value
+
+
+class _FakeFilteredRead:
+    """Stand-in for the hsfs Query returned by FeatureGroup.filter(...)."""
+
+    def __init__(self, feature_group: FakeFeatureGroup, condition: _FakeFilterCondition) -> None:
+        self._feature_group = feature_group
+        self._condition = condition
+
+    def read(self, **kwargs: Any) -> pd.DataFrame:
+        frame = self._feature_group.read()
+        if frame.empty:
+            return frame
+        return frame.loc[frame[self._condition.column] == self._condition.value].reset_index(drop=True)
+
+
 class FakeFeatureGroup:
     """In-memory stand-in for one Hopsworks FeatureGroup.
 
@@ -102,6 +132,14 @@ class FakeFeatureGroup:
 
     def select(self, features: list[str]) -> _FakeQuery:
         return _FakeQuery(self, selected_columns=list(features))
+
+    def filter(self, condition: _FakeFilterCondition) -> _FakeFilteredRead:
+        return _FakeFilteredRead(self, condition)
+
+    def __getattr__(self, name: str) -> _FakeFeature:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return _FakeFeature(name)
 
 
 class _FakeQuery:

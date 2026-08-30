@@ -192,22 +192,36 @@ def _conform_to_schema(frame: pd.DataFrame, fg: Any) -> pd.DataFrame:
 def _load(fg_name: str, key_columns: list[str]) -> pd.DataFrame:
     fs = _get_feature_store()
     fg = _get_feature_group(fs, fg_name)
-    frame = _read_with_retry(fg=fg, fg_name=fg_name)
+    configured_city_id = load_city_config().city_id
+    frame = _read_with_retry(fg=fg, fg_name=fg_name, city_id=configured_city_id)
     if frame.empty:
         return frame
+    # The query-service filter above is the real fix (halves data transferred once a
+    # second city's rows live in the same feature group); this is a cheap defensive
+    # backstop in case the filter predicate is ever built wrong or matches too broadly.
     frame = _filter_to_configured_city(frame)
     frame = frame.sort_values(key_columns).reset_index(drop=True)
     _validate_frame(frame=frame, key_columns=key_columns)
     return frame
 
 
-def _read_with_retry(fg: Any, fg_name: str, attempts: int = 3, delay_seconds: int = 5) -> pd.DataFrame:
-    """Retry transient Hopsworks query-service read failures."""
+def _read_with_retry(
+    fg: Any, fg_name: str, city_id: str, attempts: int = 3, delay_seconds: int = 5
+) -> pd.DataFrame:
+    """Retry transient Hopsworks query-service read failures.
+
+    Filters to the configured city server-side (via the Feature Query Service) rather
+    than reading every city's rows and discarding most of them in Python -- once a
+    second city's history lives in the same feature group, an unfiltered read
+    transfers roughly double the data for no reason, which is what made
+    `aqi_features_v1` reads slow enough to blow past Render's gateway timeout after
+    the Karachi backfill (measured ~134s for the full 71k-row unfiltered read).
+    """
 
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return fg.read()
+            return fg.filter(fg.city_id == city_id).read()
         except Exception as exc:  # noqa: BLE001 - hsfs raises several wrapped exception types
             last_error = exc
             if attempt == attempts:
