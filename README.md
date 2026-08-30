@@ -127,21 +127,22 @@ The suite mocks all external services, including Open-Meteo HTTP calls and Hopsw
 
 ## Deployment
 
-Public deployment is prepared but not yet created. Per `ADR-007`, the intended path is Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API.
+Publicly deployed and live:
 
-Planned public URLs:
+- API: https://aqi-predictor-shine-4au0.onrender.com
+- Dashboard: https://aqipredictor-samzzh.streamlit.app
 
-- API: `<hugging-face-space-url>`
-- Dashboard: `<streamlit-app-url>`
+`ADR-007` originally planned Hugging Face Spaces (Docker SDK) for the API. Hugging Face changed its pricing after that plan was written — Docker Spaces now require a paid PRO plan, breaking the contract's "no credit card required" hosting constraint — so the API is hosted on [Render](https://render.com) instead (free tier, no card required, builds from the same [docker/Dockerfile.api](docker/Dockerfile.api) unchanged). The dashboard is on Streamlit Community Cloud as originally planned.
 
-### Hugging Face Spaces API
+### Render API
 
-Prepared files:
+1. Create a Web Service from this GitHub repo.
+2. Runtime: **Docker**. Dockerfile Path: `docker/Dockerfile.api`. Root Directory: blank (build context is the repo root).
+3. Instance Type: **Free**.
+4. Environment Variables: `HOPSWORKS_API_KEY`, `HOPSWORKS_PROJECT`.
+5. Deploy. Render auto-redeploys on every push to `main`.
 
-- [docker/Dockerfile.api](docker/Dockerfile.api)
-- [.dockerignore](.dockerignore)
-
-Run these locally on a machine with Docker installed:
+Local verification (requires the `docker` CLI, not available in every dev environment):
 
 ```bash
 docker build -f docker/Dockerfile.api -t pearls-aqi-api .
@@ -150,31 +151,17 @@ curl http://127.0.0.1:7860/health
 curl http://127.0.0.1:7860/forecast
 ```
 
-Manual Hugging Face Spaces steps:
-
-1. Create a new Space and choose `Docker` as the SDK.
-2. Add this repository's contents to the Space repository and keep port `7860`.
-3. Add `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` in the Space Settings as secrets.
-4. Let the Space build from `docker/Dockerfile.api`.
-5. Copy the resulting public Space URL into the API placeholder above.
-
 ### Streamlit Community Cloud Dashboard
 
-No Dockerfile is needed. `dashboard/app.py` already reads `API_BASE_URL` from the environment.
-
-Manual Streamlit Community Cloud steps:
-
-1. Create a new app from this GitHub repository.
-2. Set the entrypoint to `dashboard/app.py`.
-3. In Advanced settings, choose Python `3.11`.
-4. Add `API_BASE_URL=<hugging-face-space-url>` plus `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` in the app settings/secrets UI.
-5. Copy the resulting public Streamlit URL into the dashboard placeholder above.
-
-This environment does not have the `docker` CLI installed, so I could not run the requested local container build/run verification here.
+1. Create a new app from this GitHub repository, entrypoint `dashboard/app.py`.
+2. Advanced settings: Python `3.11`.
+3. Secrets: `API_BASE_URL=<render-api-url>` plus `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT`.
+4. Streamlit Community Cloud also auto-redeploys on every push to `main`.
 
 ## Known limitations
 
-- Not publicly deployed yet; the deployment files and instructions are ready, but the actual Hugging Face Space and Streamlit app still need to be created.
+- **Render's free tier spins down after 15 minutes of inactivity.** The first request after idle can take 50+ seconds to wake the instance; the dashboard's API request timeout is set accordingly (60s).
+- **Hopsworks' free-tier Feature Query Service is occasionally slow independent of data volume.** Reads are filtered server-side by `city_id` (not transferred in full and discarded client-side), which cut a typical `aqi_features_v1` read from ~134s to ~30-60s after the Karachi backfill roughly doubled the feature group's row count — but an occasional slow Hopsworks response can still exceed Render's own gateway timeout, surfacing as an intermittent `502` on `/history` or `/forecast`. `src/feature_store/store.py::_read_with_retry` retries transient failures within the request; a hung request that Render's gateway kills before a retry completes will still show as a one-off failure to the client. Retrying the request from the browser resolves it.
 - CAMS air-quality coverage for this region is 3-hourly and interpolated to hourly by Open-Meteo; see `ADR-002`.
 - The hourly refresh currently only upserts rows newer than the latest stored `event_time`; if Open-Meteo revises already-seen historical timestamps later, this pipeline will not replay those timestamps automatically.
 - Weather-forecast features are intentionally excluded from v1 to avoid training/serving skew; see `ADR-006`.

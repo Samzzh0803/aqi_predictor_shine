@@ -1,6 +1,6 @@
 # Pearls AQI Predictor — Final Report
 
-**City:** Karachi, Pakistan (24.8608, 67.0104) · **Period:** 10-day build + feature-store swap + automation · **Status:** MVP complete, public hosting is the only remaining gap (see §19)
+**City:** Karachi, Pakistan (24.8608, 67.0104) · **Period:** 10-day build + feature-store swap + automation · **Status:** MVP complete, publicly deployed (see §18). Note: several narrative sections below (model comparison numbers, §23's conclusion) still describe the pre-Karachi-switch Lahore run and need a Karachi-specific rewrite with real numbers — flagged, not silently left as-is.
 
 ---
 
@@ -165,35 +165,34 @@ One page: header (city, last data update, last training time, champion version),
 
 ## 18. Deployment
 
-**Deployment package prepared; public URLs not created yet.** The intended path (`ADR-007`) remains Streamlit Community Cloud for the dashboard and Hugging Face Spaces (Docker SDK) for the API, both free and requiring no credit card. Both the Model Registry (§14) and the Feature Store (§13) are already live and remotely reachable, so hosting is now a packaging/configuration step rather than an architecture blocker.
+**Publicly deployed and live:**
 
-Prepared hosting artifacts:
+- API: https://aqi-predictor-shine-4au0.onrender.com
+- Dashboard: https://aqipredictor-samzzh.streamlit.app
 
-- `docker/Dockerfile.api` runs `uvicorn src.api.main:app --host 0.0.0.0 --port 7860`, matching the Hugging Face Spaces Docker port.
+`ADR-007` originally planned Hugging Face Spaces (Docker SDK) for the API. Hugging Face changed its pricing after that plan was written — Docker Spaces now require a paid PRO plan, breaking the contract's "no credit card required" hosting constraint — so the API runs on [Render](https://render.com) instead (free tier, no card required), building from the same `docker/Dockerfile.api` unchanged. The dashboard is on Streamlit Community Cloud as originally planned.
+
+Hosting artifacts:
+
+- `docker/Dockerfile.api` runs `uvicorn src.api.main:app --host 0.0.0.0 --port 7860`.
 - `.dockerignore` excludes local-only content (`data/`, `notebooks/`, `.venv/`, `tests/`, `docs/`, `.git/`) so the API image does not ship raw caches or the local development environment.
-- `dashboard/app.py` already reads `API_BASE_URL` from the environment, so Streamlit Community Cloud requires configuration rather than code changes.
+- `dashboard/app.py` reads `API_BASE_URL` from the environment.
 
-Planned public URLs, to be filled after deployment:
-
-- API: `<hugging-face-space-url>`
-- Dashboard: `<streamlit-app-url>`
-
-Manual deployment still needs to happen in the two platform UIs: create a Docker Space, add `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` as Space secrets, deploy the API on port `7860`, then create a Streamlit Community Cloud app from `dashboard/app.py` with Python 3.11 and set `API_BASE_URL` plus the same Hopsworks secrets in Streamlit's settings UI.
-
-One honest verification gap remains: this coding environment does not have Docker installed, so the API container could not be built or run locally from here. The deployment files are prepared, but the final local `docker build` / `docker run` smoke test still needs to be executed on a Docker-enabled machine.
+Both platforms auto-redeploy on every push to `main`. Both the Model Registry (§14) and the Feature Store (§13) are live and remotely reachable; the API and dashboard read from them directly at request time, not from any local cache.
 
 ## 19. Limitations
 
-- **Not publicly hosted.** No live URL exists yet for the API or dashboard — this is now the only remaining gap between the current system and the full contract objective.
+- **Render's free tier spins down after 15 minutes of inactivity.** The first request after idle can take 50+ seconds to wake the instance; the dashboard's API request timeout (60s) accounts for this.
+- **Hopsworks' free-tier Feature Query Service is occasionally slow independent of data volume.** Reads are filtered server-side by `city_id` rather than transferred in full and discarded client-side — this cut a typical `aqi_features_v1` read from ~134s to ~30-60s after the Karachi backfill roughly doubled the feature group's row count — but an occasional slow Hopsworks response can still exceed Render's own gateway timeout, surfacing as an intermittent `502` on `/history` or `/forecast`. Retrying the request resolves it; this is a free-tier characteristic, not a code defect.
 - **The hourly refresh only inserts rows newer than the latest stored `event_time`.** If Open-Meteo later revises an already-seen historical reading, this pipeline won't replay and re-upsert it automatically.
 - **CAMS coverage for this region is 3-hourly, interpolated to hourly** by the data provider — a real resolution limit, not an artifact of this project's processing.
 - **Weather-forecast features are excluded from v1 by design** (`ADR-006`) to avoid training/serving skew that would otherwise inflate validation numbers without a genuine accuracy gain.
-- **Single city.** Multi-city support is explicitly out of scope for v1 per the contract.
+- **The Model Registry and Feature Store now hold two cities' data (Lahore and Karachi) in the same shared names.** Reads/champion-selection are correctly scoped by `city_id` (`ADR-013`); a genuine multi-city *product* (serving both simultaneously) is still out of scope for v1 per the contract.
 - **The Hopsworks free-tier API key cannot use Hopsworks Model Serving** (`ADR-001`) — self-hosted FastAPI inference is the deliberate substitute, not a workaround to apologize for.
 
 ## 20. Cost and scalability
 
-Every component used is on a free tier: Open-Meteo (non-commercial), Hopsworks Serverless Free (1 project, Feature Store + Model Registry, no card), GitHub Actions (free minutes on a public/private repo of this size), Streamlit Community Cloud and Hugging Face Spaces (both free, no card). The only real scaling constraint is Hopsworks' Model Registry free-tier storage and the free-tier absence of Model Serving — both acceptable at this project's scale (a handful of small model files, self-hosted inference).
+Every component used is on a free tier: Open-Meteo (non-commercial), Hopsworks Serverless Free (1 project, Feature Store + Model Registry, no card), GitHub Actions (free minutes on a public/private repo of this size), Streamlit Community Cloud (free, no card) and Render (free, no card — swapped in for Hugging Face Spaces per §18 after Hugging Face made Docker Spaces paid-only). The real scaling constraints are Hopsworks' Model Registry free-tier storage and the free-tier absence of Model Serving (both acceptable at this project's scale), plus Render's free-tier spin-down and Hopsworks' free-tier query-service latency (§19).
 
 ## 21. Business applications
 
@@ -201,7 +200,7 @@ The forecast is designed to feed operational decisions via a `DATA → FORECAST 
 
 ## 22. Future improvements
 
-In priority order: (1) public hosting (Streamlit Community Cloud + Hugging Face Spaces per `ADR-007`) — the only remaining gap; (2) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (3) multi-city support, now that the single-city path is fully automated; (4) prediction uncertainty intervals; (5) drift detection comparing live prediction error against the registered validation metrics over time; (6) OpenAQ ground-sensor cross-validation as an independent data-quality check; (7) revision-aware hourly refresh (§19) so a later Open-Meteo correction to an already-seen reading gets replayed, not permanently missed.
+In priority order: (1) rewrite the narrative sections above (model comparison, SHAP discussion, §23's conclusion) for the Karachi champion — currently the only section-level gap, flagged in the header above rather than silently left inconsistent; (2) archived historical weather-forecast features via Open-Meteo's Historical Forecast API, done correctly per `ADR-006`'s stated precondition; (3) a real multi-city *product* (serving both Lahore and Karachi simultaneously, not just correctly isolated in storage per `ADR-013`); (4) prediction uncertainty intervals; (5) drift detection comparing live prediction error against the registered validation metrics over time; (6) OpenAQ ground-sensor cross-validation as an independent data-quality check; (7) revision-aware hourly refresh (§19) so a later Open-Meteo correction to an already-seen reading gets replayed, not permanently missed.
 
 ## 23. Conclusion
 
