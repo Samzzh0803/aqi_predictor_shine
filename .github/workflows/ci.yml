@@ -28,13 +28,21 @@ jobs:
           python -c "
           from pathlib import Path
           from src.data.open_meteo import (
+              CityConfig,
               fetch_air_quality_recent,
               fetch_weather_recent,
-              load_city_config,
               merge_air_quality_and_weather,
           )
 
-          city = load_city_config()
+          # Keep the shared parquet fixture stable for offline tests regardless of the
+          # repo's currently configured production city.
+          city = CityConfig(
+              city_id='lahore',
+              name='Lahore',
+              latitude=31.5497,
+              longitude=74.3436,
+              timezone='Asia/Karachi',
+          )
           air_quality = fetch_air_quality_recent(days=60, city=city)
           weather = fetch_weather_recent(days=60, city=city)
           merged = merge_air_quality_and_weather(air_quality, weather)
