@@ -220,3 +220,65 @@ If a task doesn't feed this chain, question whether it belongs in this project.
 | Model barely beats persistence | 0 min hiding it | Report honestly against baseline |
 | Vertex AI curiosity | 0 min | ADR-001 is closed |
 | Multi-city request | not before Day 9 | Configurable single city first |
+
+---
+
+# POST-10 TICKETS
+
+Tickets added after the original 10-day plan closed. Each still goes through the same review split: Codex implements, Claude reviews.
+
+## TICKET — Switch configured city from Lahore to Karachi
+
+**Raised:** 2026-08-30 by the human owner, during hosting/deployment work.
+
+**Why:** the deployed system (Hopsworks Feature Store, Model Registry champion, live API/dashboard) is currently built entirely on Lahore data (`config/config.yaml`: `city_id: "lahore"`, lat 31.5497 / lon 74.3436). The human wants Karachi as the target city instead.
+
+**This is not a config-only change.** Editing `config/config.yaml`'s city block does not retroactively convert existing history — it just means the pipeline starts writing rows under a new `city_id` with zero backfilled history behind it. Concretely, this ticket needs:
+
+1. Update `config/config.yaml` — `city.id = "karachi"`, `city.name = "Karachi"`, correct lat/lon (~24.8607, 67.0011 — verify precisely), keep `timezone: "Asia/Karachi"`.
+2. Re-run the full historical backfill (`src/pipelines/backfill.py`) against Karachi's coordinates — mirrors the Day 3 gate (`ADR-011`): fetch from `2022-08-01` (or the true earliest available date per the Day 1 backfill probe) through today, insert into `aqi_features_v1` / `aqi_targets_v1` under `city_id="karachi"`. Verify row count, date range, 0 duplicate `(city_id, event_time)` keys, matching the same rigor `ADR-011` used.
+3. Re-run the full model training/evaluation/registry flow (Day 4/5 equivalent) against the new Karachi training frame — baselines, Ridge, RandomForest, HistGradientBoosting, TensorFlow MLP, rolling-origin validation, SHAP artifacts, register champion in the Model Registry.
+4. Regenerate `data/metrics/day5_summary.json` and `data/metrics/shap/{champion}_target_aqi_day{1,2,3}_*` for the new Karachi champion — the dashboard reads these directly (see the Aug 30 session's dashboard fix; they're the exception carved out of `.gitignore`'s `data/metrics/` rule).
+5. Confirm `hourly_features.yml` / `daily_training.yml` operate correctly against the new `city_id` on their next scheduled or dispatched run.
+6. Existing Lahore rows in Hopsworks can stay (no cost to leaving them; contract's `city_id` key already supports multiple cities coexisting) — just don't let both cities' data get mixed into one training frame. Confirm `load_features()`/`load_targets()`/training code filters or is otherwise scoped correctly if the feature groups end up holding both cities.
+7. Update `docs/REPORT.md`, `README.md` city references from Lahore to Karachi where they describe the live system.
+
+**Gate:** `/forecast` on the live API returns Karachi data with a real champion model trained on real Karachi history — not a leftover Lahore artifact and not a stub.
+
+**Note:** this is genuinely close to redoing Day 3 + Day 4/5's work for a new city — budget accordingly, don't try to rush it into the current hosting-verification session.
+
+---
+
+## TICKET — Dashboard visual redesign
+
+**Raised:** 2026-08-30 by the human owner, after seeing the deployed Streamlit dashboard alongside a reference app (`https://atmokhi.streamlit.app/`, a different student's project for Karachi). Screenshots of both were reviewed in the Aug 30 session.
+
+### Priority 1 — fix the readability bug (this is a real bug, not a style preference)
+
+Nearly every non-KPI text element on the current dashboard renders white or near-white against the light cream gradient background, making it functionally invisible:
+- The page title "Pearls AQI Predictor" and its subtitle
+- The "Configured City" card's value line and sub-lines (city name, timestamps)
+- The Plotly chart's legend text ("Past 7 days", "3-day forecast") and the "AQI history and forecast" section header
+- The "Plain-language explanation" bullets under SHAP drivers (feature name badges are readable; the sentence text around them is not)
+- The entire "Model quality" card body
+
+This pattern — readable dark KPI numbers next to invisible white section text — strongly suggests custom CSS/markdown in `dashboard/app.py` hardcodes `color: white` (or a theme variable) assuming a dark background, while the actual background is light. Find and fix the actual mismatch (either the background or the text color assumption is wrong) — don't just find-and-replace individual white values without understanding why they're there, since some may be intentionally white against a genuinely dark element (e.g. inside a colored KPI card top-border).
+
+### Priority 2 — visual style pass, modeled on the reference app's look
+
+Not a pixel-for-pixel clone, but adopt its clarity:
+- Bold, condensed/uppercase headers (reference uses a heavy display font for section titles like "CURRENT AIR QUALITY")
+- Solid navy-blue accent cards on a warm cream page background — consistent, high-contrast card treatment throughout instead of the current low-contrast translucent cards
+- A circular gauge chart for current AQI (reference shows a half-donut gauge with category bands 0–50/50–100/etc. and a needle) instead of (or alongside) the plain KPI number — this is a nice-to-have, the plain KPI cards are fine functionally, just less immediately legible
+- Tabbed navigation instead of one long scroll: e.g. "Live & 3-Day Forecast" / "Model Metrics & SHAP" / "City Data Insights" / "Health Guidelines" as separate tabs (`st.tabs`), each showing a focused subset of what's currently all stacked on one page
+- Full SHAP beeswarm summary plot (reference's "Feature Importance & SHAP Values" chart) as an option alongside the existing top-5 bar chart, if the underlying per-sample SHAP values are available/cheap to compute for the champion model — check before committing to this, don't recompute SHAP live in the request path if it's expensive
+
+### Explicitly do NOT copy as-is
+
+- **The reference's "Custom Scenario Simulator" tab's feature set.** Its top SHAP feature is `aqi_lag_1h`. `PROJECT_CONTRACT.md` §4 explicitly drops `aqi_lag_1h`/`pm25_lag_1h` from our feature set — the source data is natively 3-hourly, so a 1-hour lag is a near-duplicate of the current value and was a deliberate exclusion, not an oversight. If a scenario simulator is wanted, it has to run against our actual locked feature list (53 columns) and registered model — exposing that many sliders is likely impractical. **Get an explicit decision from the human before building this tab at all**; it may not be worth doing.
+- **The reference's model choice (XGBoost).** Not in our locked stack (`PROJECT_CONTRACT.md` §2: Ridge / RandomForest / HistGradientBoosting / TensorFlow MLP only). Our champion stays whatever `get_champion()` returns — match the reference's *card styling* for showing model metrics, not its model type.
+- Any feature engineering choices visible in their SHAP feature names (`aqi_rolling_3h`, `hour_category`, etc.) that don't match our locked feature list in `PROJECT_CONTRACT.md` §4 — cosmetic inspiration only, not a spec to implement against.
+
+**File in scope:** `dashboard/app.py` only. No changes to `src/inference`, `src/models`, or the API — this is a presentation-layer ticket.
+
+**Gate:** every piece of text on the dashboard is legible against its background at default browser zoom, in both the "everything's fine" state and the error state (`_render_error_state`). Existing functional content (KPIs, forecast chart, pollutant drivers, SHAP table, model quality, alert banner) all still present — restyled, not removed.
