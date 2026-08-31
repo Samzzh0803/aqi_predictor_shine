@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from src.config import get_config
 from src.data.open_meteo import OpenMeteoClientError
 from src.feature_store import load_features
-from src.inference.predictor import PredictionArtifacts, predict_next_3_days
+from src.inference.predictor import PredictionArtifacts, predict_next_3_days, predict_scenario
 from src.models.registry import get_champion
 
 app = FastAPI(title="Pearls AQI Predictor API")
@@ -56,6 +56,17 @@ class HistoryResponse(BaseModel):
     city: str
     days: int
     points: list[HistoryPointResponse]
+
+
+class ScenarioRequest(BaseModel):
+    pm2_5: float | None = None
+    pm10: float | None = None
+    carbon_monoxide: float | None = None
+    nitrogen_dioxide: float | None = None
+    sulphur_dioxide: float | None = None
+    ozone: float | None = None
+    temperature_2m: float | None = None
+    relative_humidity_2m: float | None = None
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -114,6 +125,18 @@ def history(days: int = Query(default=7, ge=1, le=30)) -> HistoryResponse:
         for row in history_frame.itertuples(index=False)
     ]
     return HistoryResponse(city=city_name, days=days, points=points)
+
+
+@app.post("/predict-scenario", response_model=ForecastResponse)
+def predict_scenario_endpoint(request: ScenarioRequest) -> ForecastResponse:
+    overrides = {key: value for key, value in request.model_dump().items() if value is not None}
+    try:
+        payload = predict_scenario(overrides)
+    except OpenMeteoClientError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - convert backend dependency failures into a useful API response
+        raise HTTPException(status_code=503, detail=f"Scenario backend failed: {exc}") from exc
+    return _forecast_response(payload)
 
 
 def _forecast_response(payload: PredictionArtifacts) -> ForecastResponse:

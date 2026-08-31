@@ -11,8 +11,25 @@ import pandas as pd
 from src.config import get_config
 from src.data.open_meteo import OpenMeteoClientError
 from src.feature_store import load_features
+from src.features.build_features import (
+    KEY_COLUMNS,
+    RAW_AIR_QUALITY_COLUMNS,
+    RAW_WEATHER_COLUMNS,
+    build_features,
+)
 from src.inference.aqi import aqi_alert_level, aqi_category
 from src.models.registry import RegisteredModelVersion, get_champion, load_registered_models
+
+SCENARIO_OVERRIDABLE_COLUMNS: list[str] = [
+    "pm2_5",
+    "pm10",
+    "carbon_monoxide",
+    "nitrogen_dioxide",
+    "sulphur_dioxide",
+    "ozone",
+    "temperature_2m",
+    "relative_humidity_2m",
+]
 
 
 @dataclass(frozen=True)
@@ -91,6 +108,66 @@ def load_latest_feature_row(*, max_feature_age_hours: int = 48) -> pd.Series:
             f"event_time={latest_event_time.isoformat()} is older than {max_feature_age_hours} hours"
         )
     return latest
+
+
+def predict_scenario(overrides: dict[str, float], *, history_hours: int = 100) -> PredictionArtifacts:
+    """Forecast a what-if scenario: override this hour's raw readings, keep real history.
+
+    Reuses the exact same `build_features()` the training and hourly-refresh
+    pipelines call, rather than a second, hand-rolled feature computation --
+    that duplication is exactly the training/serving-skew risk this project
+    guards against elsewhere. Only raw pollutant/weather columns are
+    overridable; lags, rolling stats, and calendar features are always
+    recomputed from real history plus the override, never set directly --
+    a user-set `aqi_lag_72h` would be fabricated data with no real
+    timestamp behind it, not a legitimate scenario input.
+    """
+
+    unknown = sorted(set(overrides) - set(SCENARIO_OVERRIDABLE_COLUMNS))
+    if unknown:
+        raise OpenMeteoClientError(f"Cannot override these columns: {unknown}")
+
+    champion = get_champion()
+    raw_columns = [*KEY_COLUMNS, *RAW_AIR_QUALITY_COLUMNS, *RAW_WEATHER_COLUMNS]
+    history = load_features().sort_values(["city_id", "event_time"]).reset_index(drop=True)
+    if history.empty:
+        raise OpenMeteoClientError("Feature store is empty; run backfill or hourly feature generation first")
+
+    configured_city_id = history["city_id"].iloc[-1]
+    tail = history.loc[history["city_id"] == configured_city_id, raw_columns].tail(history_hours).copy()
+    if len(tail) < history_hours:
+        raise OpenMeteoClientError(
+            f"Not enough recent history for a reliable scenario forecast: found {len(tail)} hours, need {history_hours}"
+        )
+
+    scenario_row = tail.iloc[-1].copy()
+    scenario_row["event_time"] = tail.iloc[-1]["event_time"] + pd.Timedelta(hours=1)
+    for column, value in overrides.items():
+        scenario_row[column] = float(value)
+
+    combined = pd.concat([tail, pd.DataFrame([scenario_row])], ignore_index=True)
+    engineered = build_features(combined)
+    scenario_features = engineered.iloc[-1]
+
+    feature_vector = _build_ordered_feature_vector(scenario_features, champion.feature_list)
+    predictions = _predict_horizons(champion=champion, feature_vector=feature_vector)
+    forecast = [
+        PredictionPoint(
+            horizon=f"day_{index}",
+            aqi=value,
+            category=aqi_category(value),
+            alert=aqi_alert_level(value),
+        )
+        for index, value in enumerate(predictions, start=1)
+    ]
+    return PredictionArtifacts(
+        city=_configured_city_name(),
+        generated_at=datetime.now(UTC).isoformat(),
+        model_version=champion.version,
+        model_type=champion.model_type,
+        current_aqi=float(scenario_features["us_aqi"]),
+        forecast=forecast,
+    )
 
 
 def _build_ordered_feature_vector(latest_features: pd.Series, feature_list: list[str]) -> pd.DataFrame:

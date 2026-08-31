@@ -53,6 +53,8 @@ def test_load_current_conditions_reads_latest_feature_row(monkeypatch: pytest.Mo
             "pm10": [120.0, 121.0],
             "ozone": [10.0, 11.0],
             "nitrogen_dioxide": [20.0, 21.0],
+            "sulphur_dioxide": [5.0, 6.0],
+            "carbon_monoxide": [400.0, 410.0],
             "relative_humidity_2m": [70.0, 71.0],
             "wind_speed_10m": [4.0, 4.5],
         }
@@ -100,6 +102,14 @@ def test_load_dashboard_payload_surfaces_api_errors(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "dashboard.app._get_json",
         lambda url, params=None: (_ for _ in ()).throw(OpenMeteoClientError("API down")),
+    )
+    # load_dashboard_payload runs its API calls and the direct Hopsworks read
+    # concurrently (see the ThreadPoolExecutor in dashboard/app.py), so this must
+    # be mocked too -- otherwise it fires a real, un-mocked live Hopsworks call
+    # from a background thread while the test only expects the API to fail.
+    monkeypatch.setattr(
+        "dashboard.app._load_current_conditions",
+        lambda: {"event_time": "2026-08-27T23:00:00+00:00", "pm2_5": 101.0},
     )
 
     with pytest.raises(OpenMeteoClientError, match="API down"):

@@ -13,8 +13,37 @@ from sklearn.linear_model import Ridge
 
 from src.data.open_meteo import OpenMeteoClientError
 from src.inference.aqi import aqi_alert_level, aqi_category
-from src.inference.predictor import predict_next_3_days
+from src.inference.predictor import predict_next_3_days, predict_scenario
 from src.models.registry import RegisteredModelVersion
+
+
+def _build_raw_history(hours: int = 100, city_id: str = "karachi") -> pd.DataFrame:
+    start = pd.Timestamp("2026-01-01T00:00:00+00:00")
+    rows = [
+        {
+            "city_id": city_id,
+            "latitude": 24.8608,
+            "longitude": 67.0104,
+            "event_time": start + pd.Timedelta(hours=index),
+            "us_aqi": 80.0 + index * 0.1,
+            "pm2_5": 20.0,
+            "pm10": 30.0,
+            "carbon_monoxide": 400.0,
+            "nitrogen_dioxide": 15.0,
+            "sulphur_dioxide": 5.0,
+            "ozone": 40.0,
+            "dust": 10.0,
+            "temperature_2m": 30.0,
+            "relative_humidity_2m": 50.0,
+            "precipitation": 0.0,
+            "surface_pressure": 1010.0,
+            "cloud_cover": 20.0,
+            "wind_speed_10m": 10.0,
+            "wind_direction_10m": 180.0,
+        }
+        for index in range(hours)
+    ]
+    return pd.DataFrame(rows)
 
 
 def test_aqi_category_boundaries() -> None:
@@ -163,3 +192,74 @@ def test_predict_next_3_days_rejects_missing_registered_feature(
 
     with pytest.raises(OpenMeteoClientError, match="missing registered feature columns"):
         predict_next_3_days()
+
+
+def test_predict_scenario_overrides_raw_inputs_and_reuses_build_features(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feature_list = ["pm2_5", "aqi_mean_24h", "temperature_2m"]
+    model_paths = {}
+    for index, target in enumerate(["target_aqi_day1", "target_aqi_day2", "target_aqi_day3"], start=1):
+        model = Ridge()
+        model.coef_ = np.zeros(len(feature_list))
+        model.intercept_ = 50.0 * index
+        model.n_features_in_ = len(feature_list)
+        artifact_path = tmp_path / f"{target}.joblib"
+        joblib.dump(model, artifact_path)
+        model_paths[target] = str(artifact_path)
+
+    champion = RegisteredModelVersion(
+        model_name="pearls_aqi_forecaster",
+        version=9,
+        model_type="ridge",
+        metrics={"mae_mean": 1.0, "selection_mae_mean": 1.0},
+        feature_list=feature_list,
+        trained_at="2026-08-27T00:00:00+00:00",
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-08-27T00:00:00+00:00",
+        artifact_paths=model_paths,
+    )
+    raw_history = _build_raw_history()
+
+    monkeypatch.setattr("src.inference.predictor.get_champion", lambda: champion)
+    monkeypatch.setattr("src.inference.predictor.load_features", lambda: raw_history)
+    monkeypatch.setattr("src.inference.predictor._configured_city_name", lambda: "Karachi")
+    monkeypatch.setattr(
+        "src.inference.predictor.load_registered_models",
+        lambda version: {name: joblib.load(path) for name, path in version.artifact_paths.items()},
+    )
+
+    result = predict_scenario({"pm2_5": 999.0})
+
+    assert result.model_version == 9
+    assert [point.aqi for point in result.forecast] == [50.0, 100.0, 150.0]
+    # current_aqi reflects the real, un-overridden latest us_aqi -- overriding pm2_5
+    # must not fabricate a different "current" AQI reading.
+    assert result.current_aqi == pytest.approx(80.0 + 99 * 0.1)
+
+
+def test_predict_scenario_rejects_unknown_override_columns() -> None:
+    with pytest.raises(OpenMeteoClientError, match="Cannot override"):
+        predict_scenario({"us_aqi": 10.0})
+
+
+def test_predict_scenario_rejects_insufficient_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    champion = RegisteredModelVersion(
+        model_name="pearls_aqi_forecaster",
+        version=1,
+        model_type="ridge",
+        metrics={"mae_mean": 1.0, "selection_mae_mean": 1.0},
+        feature_list=["pm2_5"],
+        trained_at="2026-08-27T00:00:00+00:00",
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-08-27T00:00:00+00:00",
+        artifact_paths={},
+    )
+    short_history = _build_raw_history(hours=10)
+
+    monkeypatch.setattr("src.inference.predictor.get_champion", lambda: champion)
+    monkeypatch.setattr("src.inference.predictor.load_features", lambda: short_history)
+
+    with pytest.raises(OpenMeteoClientError, match="Not enough recent history"):
+        predict_scenario({"pm2_5": 1.0})

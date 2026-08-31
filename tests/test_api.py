@@ -49,6 +49,52 @@ def test_forecast_endpoint_returns_predictions(
     assert response.json()["forecast"][2]["alert"] == "warning"
 
 
+def test_predict_scenario_endpoint_forwards_overrides_and_returns_predictions(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, float] = {}
+
+    def fake_predict_scenario(overrides: dict[str, float]) -> PredictionArtifacts:
+        captured.update(overrides)
+        return PredictionArtifacts(
+            city="Karachi",
+            generated_at="2026-08-30T01:00:00+00:00",
+            model_version=5,
+            model_type="hist_gradient_boosting",
+            current_aqi=61.0,
+            forecast=[
+                PredictionPoint("day_1", 90.0, "Moderate", "none"),
+                PredictionPoint("day_2", 95.0, "Moderate", "none"),
+                PredictionPoint("day_3", 99.0, "Moderate", "none"),
+            ],
+        )
+
+    monkeypatch.setattr("src.api.main.predict_scenario", fake_predict_scenario)
+
+    response = client.post("/predict-scenario", json={"pm2_5": 200.0, "temperature_2m": None})
+
+    assert response.status_code == 200
+    assert response.json()["forecast"][0]["aqi"] == 90.0
+    # None-valued fields must be dropped, not forwarded as an override of None
+    assert captured == {"pm2_5": 200.0}
+
+
+def test_predict_scenario_endpoint_returns_503_for_invalid_override(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.api.main.predict_scenario",
+        lambda overrides: (_ for _ in ()).throw(OpenMeteoClientError("Cannot override these columns: ['us_aqi']")),
+    )
+
+    response = client.post("/predict-scenario", json={"pm2_5": 10.0})
+
+    assert response.status_code == 503
+    assert "Cannot override" in response.json()["detail"]
+
+
 def test_forecast_endpoint_returns_503_for_stale_or_missing_features(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
