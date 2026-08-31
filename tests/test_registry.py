@@ -232,3 +232,39 @@ def test_get_champion_raises_when_no_versions_registered(fake_registry: FakeMode
 
     with pytest.raises(OpenMeteoClientError, match="No registered models found"):
         get_champion("pearls_aqi_forecaster_missing")
+
+
+def test_list_registered_versions_skips_version_when_manifest_download_fails(
+    fake_registry: FakeModelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(registry_module, "load_city_config", lambda: type("City", (), {"city_id": "karachi"})())
+
+    broken = register_model_version(
+        model_name="pearls_aqi_forecaster",
+        model_type="ridge",
+        fitted_models={"target_aqi_day1": Ridge()},
+        metrics={"mae_mean": 10.0, "selection_mae_mean": 10.0, "selection_mae_std": 1.0},
+        feature_list=["us_aqi"],
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-01-02T00:00:00+00:00",
+        shap_artifact_paths={},
+    )
+    healthy = register_model_version(
+        model_name="pearls_aqi_forecaster",
+        model_type="hist_gradient_boosting",
+        fitted_models={"target_aqi_day1": Ridge()},
+        metrics={"mae_mean": 7.0, "selection_mae_mean": 7.0, "selection_mae_std": 0.5},
+        feature_list=["us_aqi"],
+        data_start="2026-01-01T00:00:00+00:00",
+        data_end="2026-01-02T00:00:00+00:00",
+        shap_artifact_paths={},
+    )
+    fake_registry.get_model("pearls_aqi_forecaster", broken.version).download = lambda: (_ for _ in ()).throw(
+        RuntimeError("artifact download failed")
+    )
+
+    versions = list_registered_versions("pearls_aqi_forecaster")
+
+    assert [version.version for version in versions] == [healthy.version]
+    assert get_champion("pearls_aqi_forecaster").version == healthy.version

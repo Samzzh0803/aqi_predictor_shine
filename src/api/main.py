@@ -69,6 +69,8 @@ def forecast() -> ForecastResponse:
         payload = predict_next_3_days()
     except OpenMeteoClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - convert backend dependency failures into a useful API response
+        raise HTTPException(status_code=503, detail=f"Forecast backend failed: {exc}") from exc
     return _forecast_response(payload)
 
 
@@ -78,6 +80,8 @@ def model_info() -> ModelInfoResponse:
         champion = get_champion()
     except OpenMeteoClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - convert backend dependency failures into a useful API response
+        raise HTTPException(status_code=503, detail=f"Model registry backend failed: {exc}") from exc
     return ModelInfoResponse(
         model_name=champion.model_name,
         version=champion.version,
@@ -97,6 +101,8 @@ def history(days: int = Query(default=7, ge=1, le=30)) -> HistoryResponse:
         features = load_features().sort_values(["city_id", "event_time"]).reset_index(drop=True)
     except OpenMeteoClientError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - convert backend dependency failures into a useful API response
+        raise HTTPException(status_code=503, detail=f"Feature-store backend failed: {exc}") from exc
     if features.empty:
         raise HTTPException(status_code=503, detail="Feature store is empty")
 

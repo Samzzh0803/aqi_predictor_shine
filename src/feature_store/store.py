@@ -323,10 +323,13 @@ def _get_feature_store() -> Any:
             "HOPSWORKS_API_KEY and HOPSWORKS_PROJECT must be set to use the feature store"
         )
 
-    project = hopsworks.login(
-        api_key_value=api_key,
-        project=project_name,
-        cert_folder=CERT_FOLDER,
-    )
-    _feature_store_cache = project.get_feature_store()
+    try:
+        project = hopsworks.login(
+            api_key_value=api_key,
+            project=project_name,
+            cert_folder=CERT_FOLDER,
+        )
+        _feature_store_cache = project.get_feature_store()
+    except Exception as exc:  # noqa: BLE001 - expose a clear operational error to API callers
+        raise OpenMeteoClientError(f"Could not connect to the Hopsworks feature store: {exc}") from exc
     return _feature_store_cache

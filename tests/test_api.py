@@ -147,3 +147,18 @@ def test_history_endpoint_returns_503_when_feature_store_read_fails(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "duplicate keys in feature store"
+
+
+def test_model_info_endpoint_returns_503_for_unexpected_registry_exception(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.api.main.get_champion",
+        lambda: (_ for _ in ()).throw(RuntimeError("registry download failed")),
+    )
+
+    response = client.get("/model-info")
+
+    assert response.status_code == 503
+    assert "Model registry backend failed" in response.json()["detail"]

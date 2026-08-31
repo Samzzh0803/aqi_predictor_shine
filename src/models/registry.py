@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -19,6 +20,7 @@ from src.data.open_meteo import OpenMeteoClientError, load_city_config
 MODEL_NAME = "pearls_aqi_forecaster"
 CERT_FOLDER = str(Path("data") / ".hopsworks_certs")
 _MANIFEST_FILENAME = "extra_manifest.json"
+LOGGER = logging.getLogger(__name__)
 
 _model_registry_cache: Any = None
 
@@ -148,7 +150,14 @@ def list_registered_versions(model_name: str = MODEL_NAME) -> list[RegisteredMod
 
     versions: list[RegisteredModelVersion] = []
     for hw_model in hw_models:
-        extra_metadata = _load_manifest(hw_model)
+        try:
+            extra_metadata = _load_manifest(hw_model)
+        except Exception:  # noqa: BLE001 - Hopsworks wraps several download failures
+            LOGGER.warning(
+                "Skipping unreadable model-registry version while listing candidates",
+                extra={"model_name": model_name, "version": getattr(hw_model, "version", "unknown")},
+            )
+            continue
         versions.append(
             RegisteredModelVersion(
                 model_name=model_name,
@@ -272,10 +281,13 @@ def _get_model_registry() -> Any:
             "HOPSWORKS_API_KEY and HOPSWORKS_PROJECT must be set to use the model registry"
         )
 
-    project = hopsworks.login(
-        api_key_value=api_key,
-        project=project_name,
-        cert_folder=CERT_FOLDER,
-    )
-    _model_registry_cache = project.get_model_registry()
+    try:
+        project = hopsworks.login(
+            api_key_value=api_key,
+            project=project_name,
+            cert_folder=CERT_FOLDER,
+        )
+        _model_registry_cache = project.get_model_registry()
+    except Exception as exc:  # noqa: BLE001 - expose a clear operational error to API callers
+        raise OpenMeteoClientError(f"Could not connect to the Hopsworks model registry: {exc}") from exc
     return _model_registry_cache
