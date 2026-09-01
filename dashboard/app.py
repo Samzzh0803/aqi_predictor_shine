@@ -461,7 +461,7 @@ def _render_forecast_chart(history_points: list[dict[str, Any]], forecast_points
             y=history_frame["us_aqi"],
             mode="lines",
             name="Past 7 Days",
-            line={"color": "#113F67", "width": 4},
+            line={"color": "#6C3082", "width": 4},
         )
     )
     figure.add_trace(
@@ -470,21 +470,21 @@ def _render_forecast_chart(history_points: list[dict[str, Any]], forecast_points
             y=forecast_frame["us_aqi"],
             mode="lines+markers",
             name="3-Day Forecast",
-            line={"color": "#E76F51", "width": 4, "dash": "dash"},
-            marker={"size": 11, "color": "#E76F51"},
+            line={"color": "#B07CC6", "width": 4, "dash": "dash"},
+            marker={"size": 11, "color": "#B07CC6"},
         )
     )
-    figure.add_vline(x=forecast_origin, line_dash="dot", line_color="#1D3557")
+    figure.add_vline(x=forecast_origin, line_dash="dot", line_color="#4A2557")
     figure.update_layout(
         height=430,
         margin={"l": 20, "r": 20, "t": 50, "b": 20},
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="#FFF8EE",
-        title={"text": "AQI history and forecast", "font": {"size": 24, "color": "#102A43"}},
-        legend={"orientation": "h", "y": 1.1, "x": 0.0, "font": {"color": "#102A43"}},
-        xaxis={"title": "Time (UTC)", "title_font": {"color": "#243B53"}, "tickfont": {"color": "#243B53"}},
-        yaxis={"title": "US AQI", "title_font": {"color": "#243B53"}, "tickfont": {"color": "#243B53"}},
-        font={"color": "#102A43"},
+        plot_bgcolor="#FFFFFF",
+        title={"text": "AQI history and forecast", "font": {"size": 24, "color": "#2D1A33"}},
+        legend={"orientation": "h", "y": 1.1, "x": 0.0, "font": {"color": "#2D1A33"}},
+        xaxis={"title": "Time (UTC)", "title_font": {"color": "#6B5471"}, "tickfont": {"color": "#6B5471"}},
+        yaxis={"title": "US AQI", "title_font": {"color": "#6B5471"}, "tickfont": {"color": "#6B5471"}},
+        font={"color": "#2D1A33"},
     )
     st.plotly_chart(figure, use_container_width=True)
 
@@ -558,15 +558,15 @@ def _build_gauge_figure(current_aqi: float) -> go.Figure:
         go.Indicator(
             mode="gauge+number",
             value=current_aqi,
-            number={"font": {"size": 52, "color": "#102A43"}},
-            title={"text": "CURRENT AQI", "font": {"size": 20, "color": "#102A43"}},
+            number={"font": {"size": 52, "color": "#2D1A33"}},
+            title={"text": "CURRENT AQI", "font": {"size": 20, "color": "#2D1A33"}},
             gauge={
-                "axis": {"range": [0, 500], "tickcolor": "#102A43", "tickfont": {"color": "#102A43"}},
-                "bar": {"color": "#0B2545", "thickness": 0.32},
-                "bgcolor": "#FFF8EE",
+                "axis": {"range": [0, 500], "tickcolor": "#2D1A33", "tickfont": {"color": "#2D1A33"}},
+                "bar": {"color": "#6C3082", "thickness": 0.32},
+                "bgcolor": "#FFFFFF",
                 "borderwidth": 0,
                 "steps": steps,
-                "threshold": {"line": {"color": "#102A43", "width": 5}, "value": current_aqi},
+                "threshold": {"line": {"color": "#2D1A33", "width": 5}, "value": current_aqi},
             },
         )
     )
@@ -574,7 +574,7 @@ def _build_gauge_figure(current_aqi: float) -> go.Figure:
         height=330,
         margin={"l": 10, "r": 10, "t": 60, "b": 10},
         paper_bgcolor="rgba(0,0,0,0)",
-        font={"color": "#102A43"},
+        font={"color": "#2D1A33"},
     )
     return figure
 
@@ -600,7 +600,7 @@ def _category_color(category: str) -> str:
         "Hazardous": "#5F0F40",
         "USG": "#F4A261",
     }
-    return mapping.get(category, "#1D3557")
+    return mapping.get(category, "#6C3082")
 
 
 def _alert_rank(alert: str) -> int:
@@ -613,20 +613,20 @@ def _inject_styles() -> None:
         """
         <style>
         :root {
-          --cream: #F8F1E5;
-          --cream-strong: #FFF8EE;
-          --navy: #0B2545;
-          --navy-soft: #1D4E89;
-          --ink: #102A43;
-          --muted: #486581;
-          --border: rgba(16, 42, 67, 0.12);
-          --shadow: 0 20px 50px rgba(11, 37, 69, 0.10);
+          --cream: #FBF8FC;
+          --cream-strong: #FFFFFF;
+          --navy: #6C3082;
+          --navy-soft: #8E4FA1;
+          --ink: #2D1A33;
+          --muted: #6B5471;
+          --border: rgba(108, 48, 130, 0.14);
+          --shadow: 0 20px 50px rgba(108, 48, 130, 0.12);
         }
         .stApp {
           background:
-            radial-gradient(circle at top left, rgba(231, 111, 81, 0.18), transparent 28%),
-            radial-gradient(circle at top right, rgba(42, 157, 143, 0.16), transparent 30%),
-            linear-gradient(180deg, var(--cream) 0%, #F3E6D1 100%);
+            radial-gradient(circle at top left, rgba(108, 48, 130, 0.14), transparent 28%),
+            radial-gradient(circle at top right, rgba(142, 79, 161, 0.12), transparent 30%),
+            linear-gradient(180deg, var(--cream) 0%, #EDE0F2 100%);
           color: var(--ink);
         }
         .block-container {
