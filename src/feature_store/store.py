@@ -323,13 +323,25 @@ def _get_feature_store() -> Any:
             "HOPSWORKS_API_KEY and HOPSWORKS_PROJECT must be set to use the feature store"
         )
 
-    try:
-        project = hopsworks.login(
-            api_key_value=api_key,
-            project=project_name,
-            cert_folder=CERT_FOLDER,
-        )
-        _feature_store_cache = project.get_feature_store()
-    except Exception as exc:  # noqa: BLE001 - expose a clear operational error to API callers
-        raise OpenMeteoClientError(f"Could not connect to the Hopsworks feature store: {exc}") from exc
+    # Login itself has been observed to fail intermittently on the free tier -- not
+    # just feature reads (see _read_with_retry) -- with varying error text
+    # ("Project wasn't found", "Couldn't find client") for what resolves on a plain
+    # retry moments later. Retry the login the same way reads already are.
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            project = hopsworks.login(
+                api_key_value=api_key,
+                project=project_name,
+                cert_folder=CERT_FOLDER,
+            )
+            _feature_store_cache = project.get_feature_store()
+            return _feature_store_cache
+        except Exception as exc:  # noqa: BLE001 - hopsworks/hsfs raise several wrapped exception types
+            last_error = exc
+            if attempt == 3:
+                break
+            LOGGER.warning("Retrying Hopsworks feature-store login after a transient failure", extra={"attempt": attempt})
+            time.sleep(5)
+    raise OpenMeteoClientError(f"Could not connect to the Hopsworks feature store: {last_error}") from last_error
     return _feature_store_cache

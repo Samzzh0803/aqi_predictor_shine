@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -281,13 +282,23 @@ def _get_model_registry() -> Any:
             "HOPSWORKS_API_KEY and HOPSWORKS_PROJECT must be set to use the model registry"
         )
 
-    try:
-        project = hopsworks.login(
-            api_key_value=api_key,
-            project=project_name,
-            cert_folder=CERT_FOLDER,
-        )
-        _model_registry_cache = project.get_model_registry()
-    except Exception as exc:  # noqa: BLE001 - expose a clear operational error to API callers
-        raise OpenMeteoClientError(f"Could not connect to the Hopsworks model registry: {exc}") from exc
-    return _model_registry_cache
+    # Login itself has been observed to fail intermittently on the free tier -- not
+    # just feature reads -- with varying error text ("Project wasn't found",
+    # "Couldn't find client") for what resolves on a plain retry moments later.
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            project = hopsworks.login(
+                api_key_value=api_key,
+                project=project_name,
+                cert_folder=CERT_FOLDER,
+            )
+            _model_registry_cache = project.get_model_registry()
+            return _model_registry_cache
+        except Exception as exc:  # noqa: BLE001 - hopsworks/hsfs raise several wrapped exception types
+            last_error = exc
+            if attempt == 3:
+                break
+            LOGGER.warning("Retrying Hopsworks model-registry login after a transient failure", extra={"attempt": attempt})
+            time.sleep(5)
+    raise OpenMeteoClientError(f"Could not connect to the Hopsworks model registry: {last_error}") from last_error
