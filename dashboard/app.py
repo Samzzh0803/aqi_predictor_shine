@@ -216,17 +216,75 @@ def _load_current_conditions() -> dict[str, float | str]:
     }
 
 
+_FEATURE_DISPLAY_NAMES: dict[str, str] = {
+    "pm25_mean_24h": "24-hour average PM2.5",
+    "pm2_5": "current PM2.5 levels",
+    "us_aqi": "the current AQI reading",
+    "pm25_change_24h": "the 24-hour PM2.5 trend",
+    "pm25_lag_6h": "PM2.5 levels six hours ago",
+    "ozone": "ozone levels",
+    "aqi_mean_72h": "the 3-day AQI average",
+    "aqi_mean_24h": "the 24-hour AQI average",
+    "sulphur_dioxide": "sulphur dioxide levels",
+    "nitrogen_dioxide": "nitrogen dioxide levels",
+    "wind_speed_10m": "wind speed",
+}
+
+
+def _humanize_feature(name: str) -> str:
+    return _FEATURE_DISPLAY_NAMES.get(name, name.replace("_", " "))
+
+
+def _build_headline(payload: DashboardPayload) -> str:
+    """A one-line, data-driven summary of the forecast -- every number in it is real."""
+
+    city = payload.forecast["city"]
+    forecast_points = payload.forecast["forecast"]
+    day1, day3 = forecast_points[0], forecast_points[2]
+    delta = day3["aqi"] - day1["aqi"]
+    top_driver = (
+        _humanize_feature(str(payload.shap_importance.iloc[0]["feature"]))
+        if not payload.shap_importance.empty
+        else "recent pollutant trends"
+    )
+    max_alert = max((point["alert"] for point in forecast_points), key=_alert_rank)
+
+    if max_alert != "none":
+        worst = max(forecast_points, key=lambda point: point["aqi"])
+        horizon_label = str(worst["horizon"]).replace("_", " ").title()
+        return (
+            f"{city} air quality alert: AQI expected to reach {worst['aqi']:.0f} "
+            f"({worst['category']}) by {horizon_label} — {top_driver} is the leading driver."
+        )
+    if delta >= 8:
+        return (
+            f"{city}'s AQI is trending up, from {day1['aqi']:.0f} to {day3['aqi']:.0f} over the next 3 days, "
+            f"staying {day3['category']} — {top_driver} is the model's top driver right now."
+        )
+    if delta <= -8:
+        return (
+            f"{city}'s air quality is improving: AQI forecast to fall from {day1['aqi']:.0f} to {day3['aqi']:.0f} "
+            f"over the next 3 days, driven largely by {top_driver}."
+        )
+    return (
+        f"{city}'s air quality is holding steady around {day1['aqi']:.0f}–{day3['aqi']:.0f} AQI ({day1['category']}) "
+        f"for the next 3 days — {top_driver} remains the model's top driver."
+    )
+
+
 def _render_hero(payload: DashboardPayload) -> None:
     forecast = payload.forecast
     model_info = payload.model_info
     history_points = payload.history["points"]
     last_data_update = history_points[-1]["event_time"] if history_points else "Unavailable"
     current_category = aqi_category(float(forecast["current_aqi"]))
+    headline = _build_headline(payload)
 
     st.markdown(
         f"""
         <div class="hero-card">
           <div class="hero-copy">
+            <p class="hero-headline">{headline}</p>
             <div class="section-kicker">Configured City</div>
             <h2>{forecast["city"]}</h2>
             <p>Champion v{forecast["model_version"]} · {forecast["model_type"]}</p>
@@ -679,6 +737,14 @@ def _inject_styles() -> None:
         .hero-card h2, .hero-card p, .error-card h3, .error-card p, .info-panel h4, .info-panel p, .guideline-card h4, .guideline-card p {
           color: var(--ink);
           margin: 0.2rem 0;
+        }
+        .hero-headline {
+          color: var(--navy);
+          font-size: 1.15rem;
+          font-weight: 800;
+          line-height: 1.35;
+          margin: 0 0 0.9rem 0 !important;
+          max-width: 640px;
         }
         .hero-status {
           display: flex;
