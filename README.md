@@ -11,8 +11,8 @@ Configured city: **Karachi, Pakistan** (24.8608, 67.0104).
 - Trains four candidate models per forecast horizon: Ridge, Random Forest, HistGradientBoosting, and a TensorFlow MLP.
 - Selects the champion by time-aware rolling-origin validation MAE, never by final-test performance.
 - Registers the champion model, ordered feature list, metrics, and SHAP artifacts in the Hopsworks Model Registry.
-- Serves `/health`, `/forecast`, `/model-info`, and `/history` via FastAPI, clipping predictions to `[0, 500]` and attaching AQI categories and alert levels.
-- Renders a one-page Streamlit dashboard with KPI cards, a history-plus-forecast chart, current pollutant/weather readings, SHAP drivers, a model-quality card, and alerts.
+- Serves `/health`, `/forecast`, `/model-info`, `/history`, and `/predict-scenario` via FastAPI, clipping predictions to `[0, 500]` and attaching AQI categories and alert levels.
+- Renders a tabbed Streamlit dashboard: live 3-day forecast with a gauge and history chart, model metrics with browsable SHAP visuals, current city conditions, an interactive scenario simulator (adjust pollutant/weather inputs and get a real recomputed forecast), and health guidance.
 - Translates the forecast into operational decisions (workforce exposure, construction, logistics, travel, events, occupational health) — see [`docs/operational_decision_support.md`](docs/operational_decision_support.md).
 
 ## Architecture
@@ -36,8 +36,6 @@ src/inference/predictor.py  ->  src/api/main.py (FastAPI)  ->  dashboard/app.py 
 ## Locked stack
 
 Python 3.11 · pandas/NumPy · scikit-learn (Ridge, RandomForest, HistGradientBoosting) · TensorFlow/Keras · SHAP · Hopsworks (Feature Store + Model Registry) · FastAPI · Streamlit + Plotly · GitHub Actions (CI + automation) · pytest · ruff.
-
-See [`PROJECT_CONTRACT.md`](PROJECT_CONTRACT.md) for the frozen objective, feature list, and metrics definitions, and [`DECISIONS.md`](DECISIONS.md) for why each of these was chosen over the alternatives.
 
 ## Install
 
@@ -76,7 +74,7 @@ python -m src.pipelines.hourly_features
 
 ## Run training
 
-Runs the full Day 4/5 pipeline and registers the champion immediately:
+Runs the full model-comparison pipeline and registers the champion immediately:
 
 ```bash
 python -m src.pipelines.train
@@ -123,7 +121,7 @@ The suite mocks all external services, including Open-Meteo HTTP calls and Hopsw
 - [`.github/workflows/hourly_features.yml`](.github/workflows/hourly_features.yml) runs hourly at minute `17` and supports `workflow_dispatch`.
 - [`.github/workflows/daily_training.yml`](.github/workflows/daily_training.yml) runs daily at `03:37` UTC and supports `workflow_dispatch`.
 - Both workflows require `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` GitHub repository secrets.
-- Both are verified live, not just offline-tested: a real dispatch grew the Feature Store by 45 rows per group and registered a new Model Registry version. See `ADR-012` for the three real bugs (a missing transitive dependency, and a Hopsworks feature-group schema mismatch in both directions) that first live dispatch surfaced and fixed.
+- Both are verified live, not just offline-tested: a real dispatch has grown the Feature Store and registered a new Model Registry version against the live project.
 
 ## Deployment
 
@@ -132,7 +130,7 @@ Publicly deployed and live:
 - API: https://aqi-predictor-shine-4au0.onrender.com
 - Dashboard: https://aqipredictor-samzzh.streamlit.app
 
-`ADR-007` originally planned Hugging Face Spaces (Docker SDK) for the API. Hugging Face changed its pricing after that plan was written — Docker Spaces now require a paid PRO plan, breaking the contract's "no credit card required" hosting constraint — so the API is hosted on [Render](https://render.com) instead (free tier, no card required, builds from the same [docker/Dockerfile.api](docker/Dockerfile.api) unchanged). The dashboard is on Streamlit Community Cloud as originally planned.
+The API is hosted on [Render](https://render.com) (free tier, no card required), building from [docker/Dockerfile.api](docker/Dockerfile.api). The dashboard is on Streamlit Community Cloud.
 
 ### Render API
 
@@ -162,9 +160,9 @@ curl http://127.0.0.1:7860/forecast
 
 - **Render's free tier spins down after 15 minutes of inactivity.** The first request after idle can take 50+ seconds to wake the instance; the dashboard's API request timeout is set accordingly (60s).
 - **Hopsworks' free-tier Feature Query Service is occasionally slow independent of data volume.** Reads are filtered server-side by `city_id` (not transferred in full and discarded client-side), which cut a typical `aqi_features_v1` read from ~134s to ~30-60s after the Karachi backfill roughly doubled the feature group's row count — but an occasional slow Hopsworks response can still exceed Render's own gateway timeout, surfacing as an intermittent `502` on `/history` or `/forecast`. `src/feature_store/store.py::_read_with_retry` retries transient failures within the request; a hung request that Render's gateway kills before a retry completes will still show as a one-off failure to the client. Retrying the request from the browser resolves it.
-- CAMS air-quality coverage for this region is 3-hourly and interpolated to hourly by Open-Meteo; see `ADR-002`.
+- CAMS air-quality coverage for this region is 3-hourly and interpolated to hourly by Open-Meteo.
 - The hourly refresh currently only upserts rows newer than the latest stored `event_time`; if Open-Meteo revises already-seen historical timestamps later, this pipeline will not replay those timestamps automatically.
-- Weather-forecast features are intentionally excluded from v1 to avoid training/serving skew; see `ADR-006`.
+- Weather-forecast features are intentionally excluded to avoid training/serving skew.
 
 ## Data attribution
 

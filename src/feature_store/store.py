@@ -158,8 +158,7 @@ def _insert(frame: pd.DataFrame, *, key_columns: list[str], fg_name: str, descri
     # The Python engine buffers inserts through Kafka before materializing to Hudi.
     # hsfs's default kafka_timeout (6s) for the metadata round-trip is too short for
     # this free-tier cluster's network path even though the broker is reachable and
-    # SSL handshake succeeds -- it just takes longer than 6s. TASKS.md's own "the free
-    # tier is not fast" applies here too.
+    # SSL handshake succeeds -- it just takes longer than 6s.
     fg.insert(frame, wait=True, write_options={"kafka_timeout": 60})
     return _load(fg_name, key_columns)
 

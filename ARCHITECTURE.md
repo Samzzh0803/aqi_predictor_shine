@@ -1,6 +1,6 @@
 # ARCHITECTURE.md
 
-Companion to `PROJECT_CONTRACT.md`. Describes how the system actually fits together. Agents read this before writing any module.
+Describes how the system actually fits together.
 
 ---
 
