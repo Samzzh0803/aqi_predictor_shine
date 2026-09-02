@@ -1,0 +1,13 @@
+name: Keep Dashboard Awake
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the Streamlit dashboard
+        run: curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 60 https://aqipredictor-samzzh.streamlit.app/
