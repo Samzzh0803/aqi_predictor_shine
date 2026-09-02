@@ -1,5 +1,7 @@
 # Pearls AQI Predictor
 
+**Live demo: [aqipredictor-samzzh.streamlit.app](https://aqipredictor-samzzh.streamlit.app)**
+
 A reproducible, serverless AQI forecasting system for one configurable city. It ingests hourly weather and air-quality data, builds leakage-free time-series features, stores them in a Hopsworks-backed feature store, forecasts average US AQI for the next 24, 48, and 72 hours across four modeling approaches, registers the validation-selected champion in the Hopsworks Model Registry, serves predictions through FastAPI, and visualizes them in a Streamlit dashboard with SHAP explanations and alerts.
 
 Configured city: **Karachi, Pakistan** (24.8608, 67.0104).
@@ -160,10 +162,25 @@ curl http://127.0.0.1:7860/forecast
 ## Known limitations
 
 - **Render's free tier spins down after 15 minutes of inactivity.** The first request after idle can take 50+ seconds to wake the instance; the dashboard's API request timeout is set accordingly (60s).
-- **Hopsworks' free-tier Feature Query Service is occasionally slow independent of data volume.** Reads are filtered server-side by `city_id` (not transferred in full and discarded client-side), which cut a typical `aqi_features_v1` read from ~134s to ~30-60s after the Karachi backfill roughly doubled the feature group's row count — but an occasional slow Hopsworks response can still exceed Render's own gateway timeout, surfacing as an intermittent `502` on `/history` or `/forecast`. `src/feature_store/store.py::_read_with_retry` retries transient failures within the request; a hung request that Render's gateway kills before a retry completes will still show as a one-off failure to the client. Retrying the request from the browser resolves it.
+- **Hopsworks' free-tier Feature Query Service is occasionally slow, independent of data volume.** Reads are filtered server-side by `city_id` rather than transferred in full and discarded client-side, which cuts typical read latency substantially — but an occasional slow response can still exceed Render's gateway timeout, surfacing as an intermittent error on `/history` or `/forecast`. Both feature reads and Hopsworks login retry automatically within the request; retrying from the browser resolves anything that still slips through.
 - CAMS air-quality coverage for this region is 3-hourly and interpolated to hourly by Open-Meteo.
 - The hourly refresh currently only upserts rows newer than the latest stored `event_time`; if Open-Meteo revises already-seen historical timestamps later, this pipeline will not replay those timestamps automatically.
 - Weather-forecast features are intentionally excluded to avoid training/serving skew.
+
+## What I learned building this
+
+- **Leakage discipline is a discipline, not a checklist.** Even with closed-left windows and chronological splits designed in from the start, a redundant 1-hour-lag feature slipped past that design intent and stayed in the code until a later review caught it — a reminder that the rules have to be actively re-checked against the actual code, not just written down once.
+- **Validation and final-test can disagree, and it matters which one you trust.** The same neural network candidate looked competitive on a single final-test split but showed 3–5x the error variance of every other model under rolling-origin validation. Whichever metric selects your production model determines whether you ship something stable or something that got lucky once.
+- **"Free tier" and "production-grade" are different promises.** Hopsworks' free tier had real behavior gaps — schema types drifting in both directions between inserts, a default join that silently reused stale values, occasional login failures — that never showed up in an offline, mocked test suite and only appeared under a genuine, live, unmocked run.
+- **Infrastructure choices can change out from under you.** A hosting platform changed its free-tier pricing mid-project, breaking a deployment plan that had already been built around it. Recovering cost a day, not a rewrite, specifically because the application code itself never assumed a particular host.
+- **A single-instance assumption hides in more places than expected.** Moving from one configured city to a second one surfaced a real bug — a model registry with no concept of which city a given model was trained for — that had only ever been "correct" because there was never a second case to get it wrong against.
+
+## What I'd do differently next time
+
+- Design for a second instance of everything from day one — a second city, a second model version, a second anything — instead of retrofitting that scoping after a real second case exposes the gap.
+- Treat a free-tier hosting platform's pricing and policies as something that can change, not a fixed constraint, and sketch a fallback before committing deployment documentation to one specific provider.
+- Run a real, live smoke test against production infrastructure earlier and more often. Several genuine bugs were invisible to a green, fully-mocked test suite and only surfaced on an actual live dispatch — catching them on day 3 instead of day 8 would have been considerably cheaper.
+- Plan for a free-tier host's idle/sleep behavior as part of the deployment design from the start, rather than discovering it after the fact from an unexpected "your app is asleep" screen.
 
 ## Data attribution
 
