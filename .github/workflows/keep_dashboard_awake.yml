@@ -9,5 +9,14 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the Streamlit dashboard
-        run: curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 60 https://aqipredictor-samzzh.streamlit.app/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Wake the Streamlit dashboard
+        run: python .github/scripts/wake_dashboard.py

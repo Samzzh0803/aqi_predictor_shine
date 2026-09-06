@@ -155,12 +155,37 @@ def _insert(frame: pd.DataFrame, *, key_columns: list[str], fg_name: str, descri
     fs = _get_feature_store()
     fg = _get_feature_group(fs, fg_name, description=description)
     frame = _conform_to_schema(frame, fg)
-    # The Python engine buffers inserts through Kafka before materializing to Hudi.
-    # hsfs's default kafka_timeout (6s) for the metadata round-trip is too short for
-    # this free-tier cluster's network path even though the broker is reachable and
-    # SSL handshake succeeds -- it just takes longer than 6s.
-    fg.insert(frame, wait=True, write_options={"kafka_timeout": 60})
+    _insert_with_retry(fg=fg, fg_name=fg_name, frame=frame)
     return _load(fg_name, key_columns)
+
+
+def _insert_with_retry(
+    fg: Any, fg_name: str, frame: pd.DataFrame, attempts: int = 3, delay_seconds: int = 5
+) -> None:
+    """Retry transient Hopsworks write failures, same as the login/read retries above.
+
+    The Python engine buffers inserts through Kafka before materializing to Hudi.
+    hsfs's default kafka_timeout (6s) for the metadata round-trip is too short for
+    this free-tier cluster's network path even though the broker is reachable and
+    SSL handshake succeeds -- it just takes longer than 6s. Writes upsert by primary
+    key, so retrying a write that actually landed is a no-op, not a duplicate.
+    """
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            fg.insert(frame, wait=True, write_options={"kafka_timeout": 60})
+            return
+        except Exception as exc:  # noqa: BLE001 - hsfs raises several wrapped exception types
+            last_error = exc
+            if attempt == attempts:
+                break
+            LOGGER.warning(
+                "Retrying feature-store insert after transient write failure",
+                extra={"feature_group": fg_name, "attempt": attempt, "attempts": attempts},
+            )
+            time.sleep(delay_seconds)
+    raise last_error  # type: ignore[misc]
 
 
 def _conform_to_schema(frame: pd.DataFrame, fg: Any) -> pd.DataFrame:

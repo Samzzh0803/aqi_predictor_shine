@@ -122,7 +122,7 @@ The suite mocks all external services, including Open-Meteo HTTP calls and Hopsw
 
 - [`.github/workflows/hourly_features.yml`](.github/workflows/hourly_features.yml) runs hourly at minute `17` and supports `workflow_dispatch`.
 - [`.github/workflows/daily_training.yml`](.github/workflows/daily_training.yml) runs daily at `03:37` UTC and supports `workflow_dispatch`.
-- [`.github/workflows/keep_dashboard_awake.yml`](.github/workflows/keep_dashboard_awake.yml) pings the live dashboard every 6 hours so it never hits Streamlit Community Cloud's 12-hour inactivity sleep. No secrets required.
+- [`.github/workflows/keep_dashboard_awake.yml`](.github/workflows/keep_dashboard_awake.yml) visits the live dashboard with a headless browser every 6 hours so it never hits Streamlit Community Cloud's 12-hour inactivity sleep. A plain HTTP ping doesn't work here — a sleeping app answers with a redirect into a cookie/JS-driven wake gateway that only a real browser session can get through. No secrets required.
 - The two pipeline workflows require `HOPSWORKS_API_KEY` and `HOPSWORKS_PROJECT` GitHub repository secrets.
 - Both pipeline workflows are verified live, not just offline-tested: a real dispatch has grown the Feature Store and registered a new Model Registry version against the live project.
 
